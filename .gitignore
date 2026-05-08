@@ -1,12 +1,55 @@
-# Ignore cache, logs, weights & biases, large files
-wandb/
+# =========================
+# Python
+# =========================
 __pycache__/
 *.pyc
-*.pkl
-*.zip
-*.avi
-*.mp4
-*.csv
-marl/models/best_policy_agent_*.pth
-marl/models/best_policy.pth
+*.pyo
+*.pyd
+
+# =========================
+# Virtual environments
+# =========================
+venv/
+.venv/
+env/
+
+# =========================
+# WandB
+# =========================
+wandb/
+
+# =========================
+# Training artifacts
+# =========================
 checkpoints/
+checkpoints_single_uav/
+checkpoints_realistic/
+
+# =========================
+# Model weights
+# =========================
+*.pth
+*.pt
+*.ckpt
+*.pkl
+
+# =========================
+# Videos / media
+# =========================
+*.mp4
+*.avi
+*.mov
+*.gif
+
+# =========================
+# Logs / data
+# =========================
+*.csv
+*.log
+
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+.vscode/
+.idea/
