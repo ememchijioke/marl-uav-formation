@@ -1,5 +1,7 @@
 import sys
 import os
+import time
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import torch
@@ -14,43 +16,44 @@ from marl.train_mappo import SharedPolicyNet
 # ----------- CONFIG ----------------
 NUM_EVAL_EPISODES = 10
 MODEL_PATH = "marl/models/best_shared_policy_realistic.pth"
-RENDER = "human"          # "human" or "headless"
-SAVE_VIDEO = False        # True only if rendering with GUI
-VIDEO_PATH = "eval_run.mp4"
+
+RENDER = "human"
+SAVE_VIDEO = True
+VIDEO_PATH = "eval_3uav_mission_best.mp4"
+
 WIDTH = 1280
 HEIGHT = 720
 FPS = 20
 
-# Camera mode:
-# "fixed"  -> shows the full A to B path clearly
-# "follow" -> follows the centroid of the UAV team
-CAMERA_MODE = "fixed"
+CAMERA_MODE = "fixed"     # "fixed" or "follow"
+SLOW_PLAYBACK = True
+SLEEP_TIME = 0.03
 
 
 # ----------- CAMERA / VISUALIZATION ----------------
 def get_team_centroid(env):
     positions = []
+
     for i in range(env.num_agents):
         s = env.env._getDroneStateVector(i)
         positions.append(s[0:3])
+
     return np.mean(np.array(positions, dtype=np.float32), axis=0)
 
 
 def capture_frame(env):
     if CAMERA_MODE == "follow":
-        centroid = get_team_centroid(env).tolist()
-        target = centroid
+        target = get_team_centroid(env).tolist()
         distance = 4.8
         yaw = 60
         pitch = -30
         fov = 65.0
     else:
-        # Fixed wide view showing full A -> B task length
-        midpoint = ((env.center_A + env.center_B) / 2.0).tolist()
-        target = midpoint
-        distance = 7.5
-        yaw = 90
-        pitch = -35
+        # Wide view for 3 UAV lane mission.
+        target = [1.0, 0.0, 0.65]
+        distance = 5.2
+        yaw = 65
+        pitch = -30
         fov = 70.0
 
     view_matrix = p.computeViewMatrixFromYawPitchRoll(
@@ -59,14 +62,14 @@ def capture_frame(env):
         yaw=yaw,
         pitch=pitch,
         roll=0,
-        upAxisIndex=2
+        upAxisIndex=2,
     )
 
     proj_matrix = p.computeProjectionMatrixFOV(
         fov=fov,
         aspect=WIDTH / HEIGHT,
         nearVal=0.1,
-        farVal=100.0
+        farVal=100.0,
     )
 
     _, _, px, _, _ = p.getCameraImage(
@@ -74,128 +77,82 @@ def capture_frame(env):
         height=HEIGHT,
         viewMatrix=view_matrix,
         projectionMatrix=proj_matrix,
-        renderer=p.ER_BULLET_HARDWARE_OPENGL
+        renderer=p.ER_BULLET_HARDWARE_OPENGL,
     )
 
     frame = np.array(px, dtype=np.uint8)[:, :, :3]
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
     return frame
-
-
-def draw_marker(position, color, radius=0.08):
-    vis_id = p.createVisualShape(
-        shapeType=p.GEOM_SPHERE,
-        radius=radius,
-        rgbaColor=color
-    )
-    body_id = p.createMultiBody(
-        baseMass=0,
-        baseVisualShapeIndex=vis_id,
-        basePosition=position
-    )
-    return body_id
 
 
 def draw_reference_path(env):
     """
-    Draw clear visual references between A and B:
-    - A center
-    - midpoint
-    - B center
-    - connecting line
-    - labels
-    - triangle slot markers for start and goal formations
+    Draw clean reference guide lines only.
+    No marker balls, no formation slots.
     """
-    marker_ids = []
 
-    A = env.center_A.tolist()
-    B = env.center_B.tolist()
-    M = ((env.center_A + env.center_B) / 2.0).tolist()
+    for i in range(env.num_agents):
+        start = env.start_positions[i].tolist()
+        hover_a = env.hover_A_targets[i].tolist()
+        hover_b = env.hover_B_targets[i].tolist()
+        land_b = env.land_B_targets[i].tolist()
 
-    # Main center markers
-    marker_ids.append(draw_marker(A, [0.0, 0.8, 0.0, 1.0], radius=0.10))   # green
-    marker_ids.append(draw_marker(M, [1.0, 1.0, 0.0, 1.0], radius=0.08))   # yellow
-    marker_ids.append(draw_marker(B, [1.0, 0.0, 0.0, 1.0], radius=0.10))   # red
-
-    # Main route line
-    p.addUserDebugLine(
-        lineFromXYZ=A,
-        lineToXYZ=B,
-        lineColorRGB=[1.0, 1.0, 1.0],
-        lineWidth=3.0,
-        lifeTime=0
-    )
-
-    # Labels
-    p.addUserDebugText(
-        text="A START",
-        textPosition=[A[0], A[1], A[2] + 0.25],
-        textColorRGB=[0.0, 1.0, 0.0],
-        textSize=1.4,
-        lifeTime=0
-    )
-    p.addUserDebugText(
-        text="MID",
-        textPosition=[M[0], M[1], M[2] + 0.25],
-        textColorRGB=[1.0, 1.0, 0.0],
-        textSize=1.3,
-        lifeTime=0
-    )
-    p.addUserDebugText(
-        text="B GOAL",
-        textPosition=[B[0], B[1], B[2] + 0.25],
-        textColorRGB=[1.0, 0.0, 0.0],
-        textSize=1.4,
-        lifeTime=0
-    )
-
-    # Triangle slot markers for start and goal formation
-    for i, off in enumerate(env.offsets):
-        start_slot = (env.center_A + off).tolist()
-        goal_slot = (env.center_B + off).tolist()
-
-        marker_ids.append(draw_marker(start_slot, [0.0, 0.5, 1.0, 0.55], radius=0.05))
-        marker_ids.append(draw_marker(goal_slot, [1.0, 0.3, 0.3, 0.55], radius=0.05))
-
+        # Takeoff line
         p.addUserDebugLine(
-            lineFromXYZ=start_slot,
-            lineToXYZ=goal_slot,
-            lineColorRGB=[0.6, 0.6, 0.6],
-            lineWidth=1.5,
-            lifeTime=0
+            lineFromXYZ=start,
+            lineToXYZ=hover_a,
+            lineColorRGB=[0.0, 1.0, 0.0],
+            lineWidth=2.0,
+            lifeTime=0,
         )
 
-        p.addUserDebugText(
-            text=f"S{i+1}",
-            textPosition=[start_slot[0], start_slot[1], start_slot[2] + 0.12],
-            textColorRGB=[0.4, 0.8, 1.0],
-            textSize=1.0,
-            lifeTime=0
+        # A to B travel line
+        p.addUserDebugLine(
+            lineFromXYZ=hover_a,
+            lineToXYZ=hover_b,
+            lineColorRGB=[1.0, 1.0, 1.0],
+            lineWidth=2.0,
+            lifeTime=0,
         )
 
-        p.addUserDebugText(
-            text=f"G{i+1}",
-            textPosition=[goal_slot[0], goal_slot[1], goal_slot[2] + 0.12],
-            textColorRGB=[1.0, 0.5, 0.5],
-            textSize=1.0,
-            lifeTime=0
+        # Landing line
+        p.addUserDebugLine(
+            lineFromXYZ=hover_b,
+            lineToXYZ=land_b,
+            lineColorRGB=[1.0, 0.0, 0.0],
+            lineWidth=2.0,
+            lifeTime=0,
         )
 
-    return marker_ids
+    p.addUserDebugText(
+        text="3 UAV WAYPOINT + LANDING MISSION",
+        textPosition=[0.75, -1.0, 1.35],
+        textColorRGB=[1.0, 1.0, 1.0],
+        textSize=1.2,
+        lifeTime=0,
+    )
 
 
 def eval_playback():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(
+            f"Model not found: {MODEL_PATH}\n"
+            "Train first or check the saved model path."
+        )
+
     env = MultiUAVRealisticEnv(
         render_mode=RENDER,
         num_agents=3,
-        max_steps=300,
+        max_steps=600,
     )
 
     n_agents = env.num_agents
     obs_dim_total = env.observation_space.shape[0]
     act_dim_total = env.action_space.shape[0]
+
     obs_dim = obs_dim_total // n_agents
     act_dim = act_dim_total // n_agents
 
@@ -204,13 +161,19 @@ def eval_playback():
     policy.eval()
 
     successes = 0
-    all_max_errs = []
-    all_mean_errs = []
-    all_cx = []
-    all_goal_dists = []
+
+    all_rewards = []
+    all_completed_agents = []
+    all_mean_distances = []
+    all_mean_xy_errors = []
+    all_mean_speeds = []
+    all_mean_attitudes = []
+    all_min_pair_dists = []
     all_collision_counts = []
-    all_slot_errs = []
-    video_frames = []
+
+    best_video_frames = []
+    best_episode_reward = -np.inf
+    best_episode_index = -1
 
     for ep in range(NUM_EVAL_EPISODES):
         obs, _ = env.reset()
@@ -220,37 +183,38 @@ def eval_playback():
 
         obs_split = np.split(obs, n_agents)
 
-        terminated = False
-        truncated = False
-        done = False
-        ep_rew = 0.0
+        ep_reward = 0.0
         info = {}
+        episode_frames = []
 
         for step in range(env.max_steps):
             actions = []
 
             with torch.no_grad():
                 for i in range(n_agents):
-                    ot = torch.tensor(
+                    obs_t = torch.tensor(
                         obs_split[i],
                         dtype=torch.float32,
-                        device=device
+                        device=device,
                     ).unsqueeze(0)
 
-                    mu = policy(ot)
-                    actions.append(mu.squeeze(0).cpu().numpy())   # deterministic
+                    action = policy(obs_t)
+                    actions.append(action.squeeze(0).cpu().numpy())
 
             flat_action = np.concatenate(actions, axis=0)
 
-            next_obs, r, terminated, truncated, info = env.step(flat_action)
+            next_obs, reward, terminated, truncated, info = env.step(flat_action)
             done = bool(terminated or truncated)
 
             obs_split = np.split(next_obs, n_agents)
-            ep_rew += r
+            ep_reward += reward
 
             if SAVE_VIDEO and RENDER == "human":
                 frame = capture_frame(env)
-                video_frames.append(frame)
+                episode_frames.append(frame)
+
+            if SLOW_PLAYBACK and RENDER == "human":
+                time.sleep(SLEEP_TIME)
 
             if done:
                 break
@@ -258,45 +222,65 @@ def eval_playback():
         success = bool(info.get("is_success", False))
         successes += int(success)
 
-        all_max_errs.append(float(info.get("max_formation_error", 0.0)))
-        all_mean_errs.append(float(info.get("mean_formation_error", 0.0)))
-        all_cx.append(float(info.get("centroid_x", 0.0)))
-        all_goal_dists.append(float(info.get("dist_to_goal", 0.0)))
+        if ep_reward > best_episode_reward:
+            best_episode_reward = ep_reward
+            best_video_frames = episode_frames.copy()
+            best_episode_index = ep + 1
+
+        all_rewards.append(float(ep_reward))
+        all_completed_agents.append(float(info.get("completed_agents", 0)))
+        all_mean_distances.append(float(info.get("mean_dist_to_target", 0.0)))
+        all_mean_xy_errors.append(float(info.get("mean_xy_error", 0.0)))
+        all_mean_speeds.append(float(info.get("mean_speed", 0.0)))
+        all_mean_attitudes.append(float(info.get("mean_attitude_error", 0.0)))
+        all_min_pair_dists.append(float(info.get("min_pair_dist", 0.0)))
         all_collision_counts.append(float(info.get("collision_count", 0.0)))
-        all_slot_errs.append(float(info.get("mean_slot_error", 0.0)))
 
         print(
-            f"Episode {ep+1}/{NUM_EVAL_EPISODES} | "
-            f"Reward: {ep_rew:.2f} | "
+            f"Episode {ep + 1}/{NUM_EVAL_EPISODES} | "
+            f"Reward: {ep_reward:.2f} | "
             f"Success: {success} | "
-            f"GoalDist: {info.get('dist_to_goal', 0.0):.3f} | "
-            f"MaxErr: {info.get('max_formation_error', 0.0):.3f} | "
-            f"MeanErr: {info.get('mean_formation_error', 0.0):.3f} | "
-            f"SlotErr: {info.get('mean_slot_error', 0.0):.3f} | "
-            f"CentroidX: {info.get('centroid_x', 0.0):.2f} | "
-            f"Collisions: {info.get('collision_count', 0)}"
+            f"Agents: {info.get('completed_agents', 0)}/3 | "
+            f"MeanPhase: {info.get('mean_phase', 0.0):.2f} | "
+            f"Phases: {info.get('phase_labels', [])} | "
+            f"Dist: {info.get('mean_dist_to_target', 0.0):.3f} | "
+            f"XYErr: {info.get('mean_xy_error', 0.0):.3f} | "
+            f"Speed: {info.get('mean_speed', 0.0):.3f} | "
+            f"MinSep: {info.get('min_pair_dist', 0.0):.3f} | "
+            f"Collisions: {info.get('collision_count', 0)} | "
+            f"Crashed: {info.get('crashed', False)}"
         )
 
-    print("\n========== EVAL SUMMARY ==========")
-    print(f"Success Rate: {successes}/{NUM_EVAL_EPISODES} ({100.0 * successes / NUM_EVAL_EPISODES:.1f}%)")
-    print(f"Mean Max Formation Error: {np.mean(all_max_errs):.3f}")
-    print(f"Mean Formation Error: {np.mean(all_mean_errs):.3f}")
-    print(f"Mean Slot Error: {np.mean(all_slot_errs):.3f}")
-    print(f"Mean Centroid X: {np.mean(all_cx):.3f}")
-    print(f"Mean Distance To Goal: {np.mean(all_goal_dists):.3f}")
+    print("\n========== 3 UAV MISSION EVAL SUMMARY ==========")
+    print(
+        f"Success Rate: {successes}/{NUM_EVAL_EPISODES} "
+        f"({100.0 * successes / NUM_EVAL_EPISODES:.1f}%)"
+    )
+    print(f"Mean Reward: {np.mean(all_rewards):.3f}")
+    print(f"Mean Completed Agents: {np.mean(all_completed_agents):.3f}/3")
+    print(f"Mean Distance To Target: {np.mean(all_mean_distances):.3f}")
+    print(f"Mean XY Error: {np.mean(all_mean_xy_errors):.3f}")
+    print(f"Mean Speed: {np.mean(all_mean_speeds):.3f}")
+    print(f"Mean Attitude Error: {np.mean(all_mean_attitudes):.3f}")
+    print(f"Mean Min Pair Distance: {np.mean(all_min_pair_dists):.3f}")
     print(f"Mean Collision Count: {np.mean(all_collision_counts):.3f}")
 
-    if SAVE_VIDEO and len(video_frames) > 0:
+    if SAVE_VIDEO and len(best_video_frames) > 0:
         out = cv2.VideoWriter(
             VIDEO_PATH,
             cv2.VideoWriter_fourcc(*"mp4v"),
             FPS,
-            (WIDTH, HEIGHT)
+            (WIDTH, HEIGHT),
         )
-        for frame in video_frames:
+
+        for frame in best_video_frames:
             out.write(frame)
+
         out.release()
-        print(f"Saved video: {VIDEO_PATH}")
+
+        print(f"\nSaved BEST episode video: {VIDEO_PATH}")
+        print(f"Best Episode: {best_episode_index}")
+        print(f"Best Episode Reward: {best_episode_reward:.2f}")
 
     env.close()
 

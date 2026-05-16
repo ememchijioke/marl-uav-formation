@@ -10,25 +10,31 @@ from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
 class MultiUAVRealisticEnv(gym.Env):
     """
-    Multi-agent quadrotor formation environment built on gym-pybullet-drones.
+    Multi-UAV waypoint-and-landing environment built on gym-pybullet-drones.
+
+    Mission:
+        3 UAVs fly independently in parallel lanes.
+
+        Phase 0: take off / hover at A
+        Phase 1: move from A to B
+        Phase 2: land at B
+
+    Important:
+        This version does NOT enforce formation control.
+        It only tests whether multiple UAVs can execute a simple waypoint mission
+        without colliding.
 
     High-level action:
-        Per-agent delta target in xyz, normalized to [-1, 1].
+        Per-agent xyz residual correction around a safe target.
 
     Low-level control:
-        DSLPIDControl converts desired position targets into motor RPMs.
+        DSLPIDControl converts target positions into motor RPMs.
 
-    Observation per drone:
-        pos(3), vel(3), rpy(3), rel_goal(3), rel_centroid(3) = 15
+    Observation per UAV:
+        pos(3), vel(3), rpy(3), rel_target(3), phase(1) = 13
 
     Joint observation:
-        concatenation of all per-agent observations
-
-    Main design:
-        - shared cooperative team reward
-        - decentralized per-agent observation for actor
-        - full joint observation available to centralized critic through trainer
-        - realistic drone dynamics via CtrlAviary + DSLPIDControl
+        Concatenation of all per-agent observations.
     """
 
     metadata = {"render_modes": ["human", "headless"]}
@@ -37,25 +43,23 @@ class MultiUAVRealisticEnv(gym.Env):
         self,
         render_mode="headless",
         num_agents=3,
-        max_steps=300,
+        max_steps=600,
         ctrl_freq=48,
         sim_freq=240,
-        action_scales=(0.35, 0.25, 0.20),
-        goal_tol=0.6,
-        formation_tol=1.2,
+        action_scales=(0.04, 0.04, 0.05),
         goal_bonus=500.0,
-        formation_penalty=2.0,
-        mean_penalty=1.0,
-        slot_penalty_weight=1.5,
-        cohesion_bonus_weight=4.0,
-        progress_weight=20.0,
-        alive_reward=0.2,
-        collision_penalty=50.0,
-        min_separation=0.18,
-        speed_penalty_weight=0.5,
-        episode_len_sec=None,
+        phase_bonus=80.0,
+        distance_weight=3.0,
+        velocity_weight=1.0,
+        attitude_weight=1.0,
+        alive_reward=0.15,
+        collision_penalty=250.0,
+        min_separation=0.30,
     ):
         super().__init__()
+
+        if num_agents != 3:
+            raise ValueError("This simplified mission environment expects exactly 3 UAVs.")
 
         self.num_agents = num_agents
         self.max_steps = max_steps
@@ -65,41 +69,57 @@ class MultiUAVRealisticEnv(gym.Env):
 
         self.action_scales = np.array(action_scales, dtype=np.float32)
 
-        self.goal_tol = goal_tol
-        self.formation_tol = formation_tol
         self.goal_bonus = goal_bonus
-        self.formation_penalty = formation_penalty
-        self.mean_penalty = mean_penalty
-        self.slot_penalty_weight = slot_penalty_weight
-        self.cohesion_bonus_weight = cohesion_bonus_weight
-        self.progress_weight = progress_weight
+        self.phase_bonus = phase_bonus
+        self.distance_weight = distance_weight
+        self.velocity_weight = velocity_weight
+        self.attitude_weight = attitude_weight
         self.alive_reward = alive_reward
         self.collision_penalty = collision_penalty
         self.min_separation = min_separation
-        self.speed_penalty_weight = speed_penalty_weight
 
-        self.episode_len_sec = (
-            episode_len_sec if episode_len_sec is not None else max_steps / ctrl_freq
-        )
+        # -----------------------------
+        # Mission layout: parallel lanes
+        # -----------------------------
+        self.lane_y = np.array([-0.60, 0.00, 0.60], dtype=np.float32)
 
-        # Formation centers
-        self.center_A = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        self.center_B = np.array([4.0, 0.0, 1.0], dtype=np.float32)
-
-        # 3-agent triangle formation offsets
-        self.offsets = np.array(
+        self.start_positions = np.array(
             [
-                [-0.35, -0.20, 0.0],
-                [ 0.35, -0.20, 0.0],
-                [ 0.00,  0.35, 0.0],
+                [0.0, -0.60, 0.20],
+                [0.0,  0.00, 0.20],
+                [0.0,  0.60, 0.20],
             ],
             dtype=np.float32,
         )
 
-        if self.num_agents != len(self.offsets):
-            raise ValueError("Offsets must match num_agents for this formation.")
+        self.hover_A_targets = np.array(
+            [
+                [0.0, -0.60, 1.00],
+                [0.0,  0.00, 1.00],
+                [0.0,  0.60, 1.00],
+            ],
+            dtype=np.float32,
+        )
 
-        self.initial_xyzs = self.center_A + self.offsets
+        self.hover_B_targets = np.array(
+            [
+                [2.0, -0.60, 1.00],
+                [2.0,  0.00, 1.00],
+                [2.0,  0.60, 1.00],
+            ],
+            dtype=np.float32,
+        )
+
+        self.land_B_targets = np.array(
+            [
+                [2.0, -0.60, 0.10],
+                [2.0,  0.00, 0.10],
+                [2.0,  0.60, 0.10],
+            ],
+            dtype=np.float32,
+        )
+
+        self.initial_xyzs = self.start_positions.copy()
         self.initial_rpys = np.zeros((self.num_agents, 3), dtype=np.float32)
 
         self.env = CtrlAviary(
@@ -122,7 +142,7 @@ class MultiUAVRealisticEnv(gym.Env):
             for _ in range(self.num_agents)
         ]
 
-        # Action = per-agent xyz delta target in normalized range [-1, 1]
+        # Action = xyz residual per UAV
         self.action_space = spaces.Box(
             low=-1.0,
             high=1.0,
@@ -130,9 +150,10 @@ class MultiUAVRealisticEnv(gym.Env):
             dtype=np.float32,
         )
 
-        # Obs per drone:
-        # pos(3), vel(3), rpy(3), rel_goal(3), rel_centroid(3) = 15
-        self.obs_dim_per_agent = 15
+        # Observation per UAV:
+        # pos(3), vel(3), rpy(3), rel_target(3), phase(1) = 13
+        self.obs_dim_per_agent = 13
+
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -141,63 +162,58 @@ class MultiUAVRealisticEnv(gym.Env):
         )
 
         self.step_count = 0
-        self.current_targets = self.initial_xyzs.copy()
-        self.prev_centroid_x = float(self.initial_xyzs[:, 0].mean())
-        self.got_goal_bonus = False
+        self.phases = np.zeros(self.num_agents, dtype=np.int32)
+        self.phase_counters = np.zeros(self.num_agents, dtype=np.int32)
+        self.current_targets = self.hover_A_targets.copy()
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
         self.step_count = 0
-        self.got_goal_bonus = False
+        self.phases = np.zeros(self.num_agents, dtype=np.int32)
+        self.phase_counters = np.zeros(self.num_agents, dtype=np.int32)
+        self.current_targets = self.hover_A_targets.copy()
 
-        sim_obs, sim_info = self.env.reset(seed=seed, options=options)
-
-        self.current_targets = self.initial_xyzs.copy()
-        self.prev_centroid_x = float(self.initial_xyzs[:, 0].mean())
+        sim_obs, _ = self.env.reset(seed=seed, options=options)
 
         obs = self._build_obs(sim_obs)
-        info = {}
-
-        return obs, info
+        return obs, {}
 
     def step(self, action):
         self.step_count += 1
+        self.phase_counters += 1
 
         action = np.asarray(action, dtype=np.float32).reshape(self.num_agents, 3)
         action = np.clip(action, -1.0, 1.0)
 
-        # Move each drone's target slightly each control step
-        delta_targets = action * self.action_scales[None, :]
-        self.current_targets += delta_targets
+        base_targets = self._get_base_targets()
 
-        # Keep targets in a sane box
-        self.current_targets[:, 0] = np.clip(
-            self.current_targets[:, 0], -1.0, self.center_B[0] + 1.0
-        )
-        self.current_targets[:, 1] = np.clip(
-            self.current_targets[:, 1], -2.0, 2.0
-        )
-        self.current_targets[:, 2] = np.clip(
-            self.current_targets[:, 2], 0.6, 1.8
-        )
+        residual = action * self.action_scales[None, :]
+        self.current_targets = base_targets + residual
+
+        # Keep each target inside its own safe lane corridor.
+        for i in range(self.num_agents):
+            self.current_targets[i, 0] = np.clip(self.current_targets[i, 0], -0.2, 2.2)
+            self.current_targets[i, 1] = np.clip(
+                self.current_targets[i, 1],
+                self.lane_y[i] - 0.15,
+                self.lane_y[i] + 0.15,
+            )
+
+            if self.phases[i] == 2:
+                self.current_targets[i, 2] = np.clip(self.current_targets[i, 2], 0.08, 1.10)
+            else:
+                self.current_targets[i, 2] = np.clip(self.current_targets[i, 2], 0.80, 1.15)
 
         rpm_action = np.zeros((self.num_agents, 4), dtype=np.float32)
 
         for i in range(self.num_agents):
             s = self.env._getDroneStateVector(i)
 
-            # Typical state layout in gym-pybullet-drones:
-            # pos: 0:3, quat: 3:7, rpy: 7:10, vel: 10:13, ang_vel: 13:16
             cur_pos = s[0:3]
             cur_quat = s[3:7]
             cur_vel = s[10:13]
             cur_ang_vel = s[13:16]
-
-            target_pos = self.current_targets[i]
-            target_rpy = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-            target_vel = np.zeros(3, dtype=np.float32)
-            target_rpy_rates = np.zeros(3, dtype=np.float32)
 
             rpm, _, _ = self.controllers[i].computeControl(
                 control_timestep=1.0 / self.ctrl_freq,
@@ -205,31 +221,54 @@ class MultiUAVRealisticEnv(gym.Env):
                 cur_quat=cur_quat,
                 cur_vel=cur_vel,
                 cur_ang_vel=cur_ang_vel,
-                target_pos=target_pos,
-                target_rpy=target_rpy,
-                target_vel=target_vel,
-                target_rpy_rates=target_rpy_rates,
+                target_pos=self.current_targets[i],
+                target_rpy=np.zeros(3),
+                target_vel=np.zeros(3),
+                target_rpy_rates=np.zeros(3),
             )
+
             rpm_action[i] = rpm
 
-        sim_obs, _, terminated, truncated, sim_info = self.env.step(rpm_action)
+        sim_obs, _, terminated, truncated, _ = self.env.step(rpm_action)
 
         reward, done, info = self._compute_reward_done_info(sim_obs)
 
-        terminated = bool(done or terminated)
-        truncated = bool(truncated or (self.step_count >= self.max_steps))
-
         obs = self._build_obs(sim_obs)
+
+        terminated = bool(done or terminated)
+        truncated = bool(truncated or self.step_count >= self.max_steps)
 
         return obs, reward, terminated, truncated, info
 
+    def _get_base_targets(self):
+        base_targets = np.zeros((self.num_agents, 3), dtype=np.float32)
+
+        for i in range(self.num_agents):
+            if self.phases[i] == 0:
+                base_targets[i] = self.hover_A_targets[i]
+
+            elif self.phases[i] == 1:
+                progress = min(1.0, self.phase_counters[i] / 220.0)
+                base_targets[i] = (
+                    (1.0 - progress) * self.hover_A_targets[i]
+                    + progress * self.hover_B_targets[i]
+                )
+
+            else:
+                progress = min(1.0, self.phase_counters[i] / 120.0)
+                base_targets[i] = (
+                    (1.0 - progress) * self.hover_B_targets[i]
+                    + progress * self.land_B_targets[i]
+                )
+
+        return base_targets
+
     def _build_obs(self, sim_obs):
         sim_obs = self._to_numpy_obs(sim_obs)
-
-        positions = sim_obs[:, 0:3]
-        centroid = positions.mean(axis=0)
+        base_targets = self._get_base_targets()
 
         obs = []
+
         for i in range(self.num_agents):
             s = sim_obs[i]
 
@@ -237,14 +276,14 @@ class MultiUAVRealisticEnv(gym.Env):
             rpy = s[7:10]
             vel = s[10:13]
 
-            rel_goal = self.center_B - pos
-            rel_centroid = centroid - pos
+            rel_target = base_targets[i] - pos
+            phase_norm = np.array([self.phases[i] / 2.0], dtype=np.float32)
 
             obs.extend(pos.tolist())
             obs.extend(vel.tolist())
             obs.extend(rpy.tolist())
-            obs.extend(rel_goal.tolist())
-            obs.extend(rel_centroid.tolist())
+            obs.extend(rel_target.tolist())
+            obs.extend(phase_norm.tolist())
 
         return np.array(obs, dtype=np.float32)
 
@@ -253,26 +292,83 @@ class MultiUAVRealisticEnv(gym.Env):
 
         positions = sim_obs[:, 0:3]
         velocities = sim_obs[:, 10:13]
+        rpys = sim_obs[:, 7:10]
 
-        centroid = positions.mean(axis=0)
-        centroid_x = float(centroid[0])
+        base_targets = self._get_base_targets()
 
-        # Shape maintenance around current centroid
-        desired_shape_positions = centroid + self.offsets
-        formation_errors = np.linalg.norm(positions - desired_shape_positions, axis=1)
-        max_err = float(np.max(formation_errors))
-        mean_err = float(np.mean(formation_errors))
+        total_reward = 0.0
+        completed_agents = 0
+        phase_changes = 0
 
-        # Slot alignment around the final target center
-        desired_goal_slots = self.center_B + self.offsets
-        slot_errors = np.linalg.norm(positions - desired_goal_slots, axis=1)
-        mean_slot_error = float(np.mean(slot_errors))
+        dists = []
+        speeds = []
+        attitudes = []
+        xy_errors = []
 
-        dist_to_goal = float(np.linalg.norm(centroid - self.center_B))
+        for i in range(self.num_agents):
+            pos = positions[i]
+            vel = velocities[i]
+            rpy = rpys[i]
+            target = base_targets[i]
 
-        min_pair_dist = np.inf
+            dist = float(np.linalg.norm(target - pos))
+            speed = float(np.linalg.norm(vel))
+            attitude_error = float(np.linalg.norm(rpy[0:2]))
+            xy_error = float(np.linalg.norm(target[0:2] - pos[0:2]))
+
+            reward_i = 0.0
+            reward_i += self.alive_reward
+            reward_i += -self.distance_weight * dist
+            reward_i += -self.velocity_weight * speed
+            reward_i += -self.attitude_weight * attitude_error
+
+            # Reward stable closeness to current target.
+            if dist < 0.25:
+                reward_i += 5.0
+
+            if dist < 0.18 and speed < 0.50:
+                reward_i += 10.0
+
+            # Phase 0 -> Phase 1: finished takeoff/hover A.
+            if self.phases[i] == 0:
+                if dist < 0.25 and speed < 0.55 and self.phase_counters[i] > 40:
+                    self.phases[i] = 1
+                    self.phase_counters[i] = 0
+                    reward_i += self.phase_bonus
+                    phase_changes += 1
+
+            # Phase 1 -> Phase 2: arrived near B hover.
+            elif self.phases[i] == 1:
+                if dist < 0.30 and speed < 0.70 and self.phase_counters[i] > 220:
+                    self.phases[i] = 2
+                    self.phase_counters[i] = 0
+                    reward_i += self.phase_bonus
+                    phase_changes += 1
+
+            # Phase 2: landing at B.
+            else:
+                landed = (
+                    abs(pos[0] - self.land_B_targets[i, 0]) < 0.25
+                    and abs(pos[1] - self.land_B_targets[i, 1]) < 0.25
+                    and pos[2] < 0.20
+                    and speed < 0.55
+                    and attitude_error < 0.70
+                )
+
+                if landed:
+                    completed_agents += 1
+                    reward_i += self.goal_bonus
+
+            total_reward += reward_i
+
+            dists.append(dist)
+            speeds.append(speed)
+            attitudes.append(attitude_error)
+            xy_errors.append(xy_error)
+
+        # Collision check
         collision_count = 0
-        cohesion_bonus = 0.0
+        min_pair_dist = np.inf
 
         for i in range(self.num_agents):
             for j in range(i + 1, self.num_agents):
@@ -282,77 +378,63 @@ class MultiUAVRealisticEnv(gym.Env):
                 if d < self.min_separation:
                     collision_count += 1
 
-                # Light cohesion shaping in a reasonable band
-                if 0.25 < d < 1.0:
-                    cohesion_bonus += (1.0 - d) * self.cohesion_bonus_weight
-
-        r_form = -(self.formation_penalty * max_err + self.mean_penalty * mean_err)
-        r_slot = -self.slot_penalty_weight * mean_slot_error
-        r_prog = self.progress_weight * (centroid_x - self.prev_centroid_x)
-        r_alive = self.alive_reward
-
-        r_goal_dense = 10.0 * (
-            1.0 - np.clip(
-                dist_to_goal / np.linalg.norm(self.center_B - self.center_A),
-                0.0,
-                1.0,
-            )
-        )
-
-        r_collision = -self.collision_penalty * collision_count
-
-        mean_speed = float(np.mean(np.linalg.norm(velocities, axis=1)))
-        r_smooth = -self.speed_penalty_weight * mean_speed
-
-        r_goal = 0.0
-        is_success = False
-        if (
-            not self.got_goal_bonus
-            and dist_to_goal <= self.goal_tol
-            and max_err <= self.formation_tol
-        ):
-            r_goal = self.goal_bonus
-            self.got_goal_bonus = True
-            is_success = True
-
-        reward = (
-            r_form
-            + r_slot
-            + cohesion_bonus
-            + r_prog
-            + r_alive
-            + r_goal_dense
-            + r_collision
-            + r_smooth
-            + r_goal
-        )
-
-        self.prev_centroid_x = centroid_x
-
-        done = bool(
-            is_success
-            or collision_count > 0
-            or self.step_count >= self.max_steps
-        )
+        if collision_count > 0:
+            total_reward -= self.collision_penalty * collision_count
 
         if min_pair_dist == np.inf:
             min_pair_dist = 0.0
 
+        crashed = bool(
+            collision_count > 0
+            or np.any(np.abs(rpys[:, 0]) > 1.30)
+            or np.any(np.abs(rpys[:, 1]) > 1.30)
+            or np.any(positions[:, 2] < 0.035)
+        )
+
+        is_success = completed_agents == self.num_agents
+
+        done = bool(
+            is_success
+            or crashed
+            or self.step_count >= self.max_steps
+        )
+
+        phase_labels = [self._phase_name(p) for p in self.phases]
+
         info = {
             "is_success": is_success,
-            "centroid_x": centroid_x,
-            "dist_to_goal": dist_to_goal,
-            "max_formation_error": max_err,
-            "mean_formation_error": mean_err,
-            "mean_slot_error": mean_slot_error,
-            "within_formation_tol": float(max_err <= self.formation_tol),
-            "collision_count": collision_count,
+            "completed_agents": int(completed_agents),
+            "phase_changes": int(phase_changes),
+            "collision_count": int(collision_count),
             "min_pair_dist": float(min_pair_dist),
-            "cohesion_bonus": float(cohesion_bonus),
-            "mean_speed": mean_speed,
+            "mean_dist_to_target": float(np.mean(dists)),
+            "max_dist_to_target": float(np.max(dists)),
+            "mean_xy_error": float(np.mean(xy_errors)),
+            "mean_speed": float(np.mean(speeds)),
+            "mean_attitude_error": float(np.mean(attitudes)),
+            "mean_phase": float(np.mean(self.phases)),
+            "phases": self.phases.astype(int).tolist(),
+            "phase_labels": phase_labels,
+            "crashed": crashed,
+            "uav0_phase": phase_labels[0],
+            "uav1_phase": phase_labels[1],
+            "uav2_phase": phase_labels[2],
+            "uav0_x": float(positions[0, 0]),
+            "uav1_x": float(positions[1, 0]),
+            "uav2_x": float(positions[2, 0]),
+            "uav0_z": float(positions[0, 2]),
+            "uav1_z": float(positions[1, 2]),
+            "uav2_z": float(positions[2, 2]),
         }
 
-        return reward, done, info
+        return total_reward, done, info
+
+    def _phase_name(self, phase):
+        if phase == 0:
+            return "TAKEOFF_A"
+        if phase == 1:
+            return "MOVE_TO_B"
+        return "LAND_B"
 
     def _to_numpy_obs(self, sim_obs):
         """
@@ -364,6 +446,7 @@ class MultiUAVRealisticEnv(gym.Env):
 
         if isinstance(sim_obs, dict):
             rows = []
+
             for i in range(self.num_agents):
                 key = str(i) if str(i) in sim_obs else i
                 entry = sim_obs[key]
@@ -372,7 +455,9 @@ class MultiUAVRealisticEnv(gym.Env):
                     rows.append(np.asarray(entry["state"], dtype=np.float32))
                 else:
                     rows.append(np.asarray(entry, dtype=np.float32))
+
             sim_obs = np.stack(rows, axis=0)
+
         else:
             sim_obs = np.asarray(sim_obs, dtype=np.float32)
 
