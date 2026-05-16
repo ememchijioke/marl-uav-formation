@@ -15,13 +15,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from envs.single_uav_env import SingleUAVHoverEnv
 
 
-# =========================
-# Arguments
-# =========================
 parser = argparse.ArgumentParser()
 parser.add_argument("--render", choices=["human", "headless"], default="headless")
 parser.add_argument("--episodes", type=int, default=1500)
-parser.add_argument("--max-steps", type=int, default=300)
+parser.add_argument("--max-steps", type=int, default=600)
 parser.add_argument("--lr-policy", type=float, default=3e-4)
 parser.add_argument("--lr-value", type=float, default=1e-3)
 parser.add_argument("--gamma", type=float, default=0.99)
@@ -30,58 +27,51 @@ parser.add_argument("--clip-range", type=float, default=0.2)
 parser.add_argument("--ent-coef", type=float, default=0.01)
 parser.add_argument("--vf-coef", type=float, default=0.5)
 parser.add_argument("--max-grad-norm", type=float, default=0.5)
-parser.add_argument("--explore-std", type=float, default=0.08)
+parser.add_argument("--explore-std", type=float, default=0.04)
 parser.add_argument("--update-epochs", type=int, default=8)
 parser.add_argument("--resume", action="store_true")
 args = parser.parse_args()
 
 
-# =========================
-# Curriculum
-# =========================
 curriculum = [
     {
         "hover_tol": 0.30,
-        "goal_bonus": 150.0,
-        "distance_weight": 4.0,
-        "altitude_weight": 6.0,
+        "landing_tol": 0.30,
+        "goal_bonus": 300.0,
+        "distance_weight": 3.0,
+        "altitude_weight": 5.0,
         "velocity_weight": 1.0,
         "attitude_weight": 1.0,
         "alive_reward": 0.3,
     },
     {
-        "hover_tol": 0.22,
-        "goal_bonus": 250.0,
+        "hover_tol": 0.23,
+        "landing_tol": 0.25,
+        "goal_bonus": 450.0,
+        "distance_weight": 5.0,
+        "altitude_weight": 7.0,
+        "velocity_weight": 1.3,
+        "attitude_weight": 1.3,
+        "alive_reward": 0.2,
+    },
+    {
+        "hover_tol": 0.18,
+        "landing_tol": 0.20,
+        "goal_bonus": 600.0,
         "distance_weight": 6.0,
         "altitude_weight": 8.0,
         "velocity_weight": 1.5,
         "attitude_weight": 1.5,
-        "alive_reward": 0.2,
-    },
-    {
-        "hover_tol": 0.15,
-        "goal_bonus": 350.0,
-        "distance_weight": 8.0,
-        "altitude_weight": 10.0,
-        "velocity_weight": 2.0,
-        "attitude_weight": 2.0,
         "alive_reward": 0.1,
     },
 ]
 
-consecutive_success_needed = 15
+consecutive_success_needed = 12
 curr_stage = 0
 
-
-# =========================
-# Device
-# =========================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# =========================
-# Models
-# =========================
 class PolicyNet(nn.Module):
     def __init__(self, obs_dim, act_dim):
         super().__init__()
@@ -117,24 +107,22 @@ class ValueNet(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-# =========================
-# Utilities
-# =========================
 def build_env(stage_cfg):
     return SingleUAVHoverEnv(
         render_mode=args.render,
         max_steps=args.max_steps,
         ctrl_freq=48,
         sim_freq=240,
-        action_scales=(0.05, 0.05, 0.08),
+        action_scales=(0.04, 0.04, 0.05),
         hover_tol=stage_cfg["hover_tol"],
+        landing_tol=stage_cfg["landing_tol"],
         goal_bonus=stage_cfg["goal_bonus"],
         distance_weight=stage_cfg["distance_weight"],
         altitude_weight=stage_cfg["altitude_weight"],
         velocity_weight=stage_cfg["velocity_weight"],
         attitude_weight=stage_cfg["attitude_weight"],
         alive_reward=stage_cfg["alive_reward"],
-        crash_penalty=200.0,
+        crash_penalty=250.0,
     )
 
 
@@ -168,15 +156,12 @@ def save_checkpoint(policy, value, opt_pol, opt_val, episode, stage_idx, ckpt_di
         f.write(str(stage_idx))
 
 
-# =========================
-# Training
-# =========================
 def train():
     global curr_stage
 
     wandb.init(
         project="single-uav-rl-baseline",
-        name=f"ppo-single-uav-{args.render}",
+        name=f"ppo-single-uav-mission-{args.render}",
         config=vars(args),
         resume="allow",
     )
@@ -203,7 +188,7 @@ def train():
     best_reward = -np.inf
     success_streak = 0
     patience = 0
-    patience_limit = 400
+    patience_limit = 700
 
     if args.resume:
         ep_path = os.path.join(ckpt_dir, "last_episode.txt")
@@ -228,13 +213,10 @@ def train():
 
         if os.path.exists(policy_path):
             policy.load_state_dict(torch.load(policy_path, map_location=device))
-
         if os.path.exists(value_path):
             value.load_state_dict(torch.load(value_path, map_location=device))
-
         if os.path.exists(opt_pol_path):
             opt_pol.load_state_dict(torch.load(opt_pol_path, map_location=device))
-
         if os.path.exists(opt_val_path):
             opt_val.load_state_dict(torch.load(opt_val_path, map_location=device))
 
@@ -251,18 +233,20 @@ def train():
                 "stage",
                 "reward",
                 "success",
-                "dist_to_goal",
+                "phase",
+                "phase_id",
+                "stable_counter",
+                "move_progress",
+                "dist_to_target",
                 "altitude",
-                "altitude_error",
+                "xy_error",
                 "speed",
                 "attitude_error",
                 "crashed",
+                "landed_successfully",
                 "pos_x",
                 "pos_y",
                 "pos_z",
-                "target_x",
-                "target_y",
-                "target_z",
                 "wandb_url",
             ])
 
@@ -332,7 +316,8 @@ def train():
         advantages = torch.tensor(adv_list, dtype=torch.float32, device=device)
         returns = torch.tensor(ret_list, dtype=torch.float32, device=device)
 
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        if len(advantages) > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         obs_batch = torch.tensor(np.array(buf_obs), dtype=torch.float32, device=device)
         action_batch = torch.tensor(np.array(buf_actions), dtype=torch.float32, device=device)
@@ -415,20 +400,22 @@ def train():
             "curriculum_stage": curr_stage + 1,
             "total_reward": ep_reward,
             "success": float(success),
-            "dist_to_hover": float(last_info.get("dist_to_hover", math.nan)),
-            "stable_hover": float(last_info.get("stable_hover", False)),
-            "hover_counter": float(last_info.get("hover_counter", 0)),
+            "phase_id": float(last_info.get("phase_id", 0)),
+            "stable_counter": float(last_info.get("stable_counter", 0)),
+            "move_progress": float(last_info.get("move_progress", 0.0)),
+            "dist_to_target": float(last_info.get("dist_to_target", math.nan)),
             "altitude": float(last_info.get("altitude", math.nan)),
-            "altitude_error": float(last_info.get("altitude_error", math.nan)),
+            "xy_error": float(last_info.get("xy_error", math.nan)),
             "speed": float(last_info.get("speed", math.nan)),
             "attitude_error": float(last_info.get("attitude_error", math.nan)),
             "crashed": float(last_info.get("crashed", False)),
-            "target_x": float(last_info.get("target_x", math.nan)),
-            "target_y": float(last_info.get("target_y", math.nan)),
-            "target_z": float(last_info.get("target_z", math.nan)),
+            "landed_successfully": float(last_info.get("landed_successfully", False)),
             "pos_x": float(last_info.get("pos_x", math.nan)),
             "pos_y": float(last_info.get("pos_y", math.nan)),
             "pos_z": float(last_info.get("pos_z", math.nan)),
+            "target_x": float(last_info.get("target_x", math.nan)),
+            "target_y": float(last_info.get("target_y", math.nan)),
+            "target_z": float(last_info.get("target_z", math.nan)),
             "entropy_coef": float(entropy_coef),
             "policy_loss": float(total_policy_loss.item()),
             "value_loss": float(total_value_loss.item()),
@@ -446,18 +433,20 @@ def train():
                 curr_stage + 1,
                 ep_reward,
                 int(success),
-                last_info.get("dist_to_goal", 0.0),
+                last_info.get("phase", ""),
+                last_info.get("phase_id", 0),
+                last_info.get("stable_counter", 0),
+                last_info.get("move_progress", 0.0),
+                last_info.get("dist_to_target", 0.0),
                 last_info.get("altitude", 0.0),
-                last_info.get("altitude_error", 0.0),
+                last_info.get("xy_error", 0.0),
                 last_info.get("speed", 0.0),
                 last_info.get("attitude_error", 0.0),
                 int(last_info.get("crashed", False)),
+                int(last_info.get("landed_successfully", False)),
                 last_info.get("pos_x", 0.0),
                 last_info.get("pos_y", 0.0),
                 last_info.get("pos_z", 0.0),
-                last_info.get("target_x", 0.0),
-                last_info.get("target_y", 0.0),
-                last_info.get("target_z", 0.0),
                 wandb_url,
             ])
 
@@ -470,8 +459,10 @@ def train():
                 f"Stage: {curr_stage + 1} | "
                 f"Reward: {ep_reward:8.2f} | "
                 f"Success: {success} | "
-                f"GoalDist: {float(last_info.get('dist_to_goal', 0.0)):.2f} | "
+                f"Phase: {last_info.get('phase', '')} | "
+                f"Dist: {float(last_info.get('dist_to_target', 0.0)):.2f} | "
                 f"Alt: {float(last_info.get('altitude', 0.0)):.2f} | "
+                f"XYErr: {float(last_info.get('xy_error', 0.0)):.2f} | "
                 f"Speed: {float(last_info.get('speed', 0.0)):.2f} | "
                 f"Crashed: {bool(last_info.get('crashed', False))}"
             )

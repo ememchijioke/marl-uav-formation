@@ -13,7 +13,6 @@ from envs.single_uav_env import SingleUAVHoverEnv
 from marl.train_single_uav import PolicyNet
 
 
-# ----------- CONFIG ----------------
 NUM_EVAL_EPISODES = 10
 MODEL_PATH = "marl/models/best_single_uav_policy.pth"
 
@@ -25,12 +24,11 @@ WIDTH = 1280
 HEIGHT = 720
 FPS = 20
 
-CAMERA_MODE = "fixed"     # "fixed" or "follow"
+CAMERA_MODE = "fixed"
 SLOW_PLAYBACK = True
-SLEEP_TIME = 0.02        # increase to 0.06 or 0.08 for slower playback
+SLEEP_TIME = 0.03
 
 
-# ----------- CAMERA / VISUALIZATION ----------------
 def get_drone_position(env):
     s = env.env._getDroneStateVector(0)
     return np.array(s[0:3], dtype=np.float32)
@@ -44,11 +42,10 @@ def capture_frame(env):
         pitch = -30
         fov = 65.0
     else:
-        midpoint = ((env.start_pos + env.hover_target) / 2.0).tolist()
-        target = midpoint
-        distance = 4.0
-        yaw = 60
-        pitch = -30
+        target = [1.0, 0.0, 0.6]
+        distance = 4.5
+        yaw = 65
+        pitch = -28
         fov = 70.0
 
     view_matrix = p.computeViewMatrixFromYawPitchRoll(
@@ -97,43 +94,49 @@ def draw_marker(position, color, radius=0.08):
 
 
 def draw_reference_path(env):
-    A = env.start_pos.tolist()
-    B = env.hover_target.tolist()
-    M = ((env.start_pos + env.hover_target) / 2.0).tolist()
+    A_ground = env.start_pos.tolist()
+    A_hover = env.hover_A.tolist()
+    B_hover = env.hover_B.tolist()
+    B_land = env.land_B.tolist()
 
-    draw_marker(A, [0.0, 0.8, 0.0, 1.0], radius=0.10)
-    draw_marker(M, [1.0, 1.0, 0.0, 1.0], radius=0.07)
-    draw_marker(B, [1.0, 0.0, 0.0, 1.0], radius=0.10)
+    #draw_marker(A_ground, [0.0, 0.8, 0.0, 1.0], radius=0.08)
+    # draw_marker(A_hover, [0.0, 0.5, 1.0, 1.0], radius=0.08)
+    # draw_marker(B_hover, [1.0, 0.5, 0.0, 1.0], radius=0.08)
+    # draw_marker(B_land, [1.0, 0.0, 0.0, 1.0], radius=0.08)
 
-    p.addUserDebugLine(
-        lineFromXYZ=A,
-        lineToXYZ=B,
-        lineColorRGB=[1.0, 1.0, 1.0],
-        lineWidth=3.0,
+    p.addUserDebugLine(A_ground, A_hover, [0.0, 1.0, 0.0], 3.0, 0)
+    p.addUserDebugLine(A_hover, B_hover, [1.0, 1.0, 1.0], 3.0, 0)
+    p.addUserDebugLine(B_hover, B_land, [1.0, 0.0, 0.0], 3.0, 0)
+
+    p.addUserDebugText(
+        "A TAKEOFF",
+        [A_ground[0], A_ground[1], A_ground[2] + 0.20],
+        [0.0, 1.0, 0.0],
+        textSize=1.3,
         lifeTime=0,
     )
 
     p.addUserDebugText(
-        text="START",
-        textPosition=[A[0], A[1], A[2] + 0.25],
-        textColorRGB=[0.0, 1.0, 0.0],
-        textSize=1.4,
+        "A HOVER",
+        [A_hover[0], A_hover[1], A_hover[2] + 0.20],
+        [0.0, 0.6, 1.0],
+        textSize=1.3,
         lifeTime=0,
     )
 
     p.addUserDebugText(
-        text="LIFT PATH",
-        textPosition=[M[0], M[1], M[2] + 0.25],
-        textColorRGB=[1.0, 1.0, 0.0],
-        textSize=1.2,
+        "B HOVER",
+        [B_hover[0], B_hover[1], B_hover[2] + 0.20],
+        [1.0, 0.6, 0.0],
+        textSize=1.3,
         lifeTime=0,
     )
 
     p.addUserDebugText(
-        text="HOVER TARGET",
-        textPosition=[B[0], B[1], B[2] + 0.25],
-        textColorRGB=[1.0, 0.0, 0.0],
-        textSize=1.4,
+        "B LAND",
+        [B_land[0], B_land[1], B_land[2] + 0.20],
+        [1.0, 0.0, 0.0],
+        textSize=1.3,
         lifeTime=0,
     )
 
@@ -149,7 +152,7 @@ def eval_playback():
 
     env = SingleUAVHoverEnv(
         render_mode=RENDER,
-        max_steps=300,
+        max_steps=600,
     )
 
     obs_dim = env.observation_space.shape[0]
@@ -162,13 +165,11 @@ def eval_playback():
     successes = 0
 
     all_rewards = []
-    all_hover_dists = []
+    all_distances = []
     all_altitudes = []
-    all_altitude_errors = []
     all_xy_errors = []
     all_speeds = []
     all_attitude_errors = []
-    all_hover_counters = []
     all_crashes = []
 
     best_video_frames = []
@@ -222,43 +223,40 @@ def eval_playback():
             best_episode_index = ep + 1
 
         all_rewards.append(float(ep_rew))
-        all_hover_dists.append(float(info.get("dist_to_hover", 0.0)))
+        all_distances.append(float(info.get("dist_to_target", 0.0)))
         all_altitudes.append(float(info.get("altitude", 0.0)))
-        all_altitude_errors.append(float(info.get("altitude_error", 0.0)))
         all_xy_errors.append(float(info.get("xy_error", 0.0)))
         all_speeds.append(float(info.get("speed", 0.0)))
         all_attitude_errors.append(float(info.get("attitude_error", 0.0)))
-        all_hover_counters.append(float(info.get("hover_counter", 0.0)))
         all_crashes.append(float(info.get("crashed", False)))
 
         print(
             f"Episode {ep + 1}/{NUM_EVAL_EPISODES} | "
             f"Reward: {ep_rew:.2f} | "
             f"Success: {success} | "
-            f"StableHover: {info.get('stable_hover', False)} | "
-            f"HoverCounter: {info.get('hover_counter', 0)} | "
-            f"DistHover: {info.get('dist_to_hover', 0.0):.3f} | "
+            f"Phase: {info.get('phase', '')} | "
+            f"StableCounter: {info.get('stable_counter', 0)} | "
+            f"MoveProgress: {info.get('move_progress', 0.0):.2f} | "
+            f"Dist: {info.get('dist_to_target', 0.0):.3f} | "
             f"XYErr: {info.get('xy_error', 0.0):.3f} | "
             f"Altitude: {info.get('altitude', 0.0):.3f} | "
-            f"AltErr: {info.get('altitude_error', 0.0):.3f} | "
             f"Speed: {info.get('speed', 0.0):.3f} | "
             f"AttErr: {info.get('attitude_error', 0.0):.3f} | "
-            f"Crashed: {info.get('crashed', False)}"
+            f"Crashed: {info.get('crashed', False)} | "
+            f"Landed: {info.get('landed_successfully', False)}"
         )
 
-    print("\n========== SINGLE UAV HOVER EVAL SUMMARY ==========")
+    print("\n========== SINGLE UAV MISSION EVAL SUMMARY ==========")
     print(
         f"Success Rate: {successes}/{NUM_EVAL_EPISODES} "
         f"({100.0 * successes / NUM_EVAL_EPISODES:.1f}%)"
     )
     print(f"Mean Reward: {np.mean(all_rewards):.3f}")
-    print(f"Mean Distance To Hover: {np.mean(all_hover_dists):.3f}")
+    print(f"Mean Distance To Target: {np.mean(all_distances):.3f}")
     print(f"Mean XY Error: {np.mean(all_xy_errors):.3f}")
     print(f"Mean Altitude: {np.mean(all_altitudes):.3f}")
-    print(f"Mean Altitude Error: {np.mean(all_altitude_errors):.3f}")
     print(f"Mean Speed: {np.mean(all_speeds):.3f}")
     print(f"Mean Attitude Error: {np.mean(all_attitude_errors):.3f}")
-    print(f"Mean Hover Counter: {np.mean(all_hover_counters):.3f}")
     print(f"Crash Rate: {np.mean(all_crashes) * 100.0:.1f}%")
 
     if SAVE_VIDEO and len(best_video_frames) > 0:
