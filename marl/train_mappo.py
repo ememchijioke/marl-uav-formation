@@ -20,8 +20,8 @@ from envs.quad_env import MultiUAVRealisticEnv
 # =========================
 parser = argparse.ArgumentParser()
 parser.add_argument("--render", choices=["human", "headless"], default="headless")
-parser.add_argument("--episodes", type=int, default=2000)
-parser.add_argument("--max-steps", type=int, default=600)
+parser.add_argument("--episodes", type=int, default=2500)
+parser.add_argument("--max-steps", type=int, default=700)
 parser.add_argument("--lr-policy", type=float, default=3e-4)
 parser.add_argument("--lr-value", type=float, default=1e-3)
 parser.add_argument("--gamma", type=float, default=0.99)
@@ -37,38 +37,53 @@ args = parser.parse_args()
 
 
 # =========================
-# Curriculum
+# v0.4 Curriculum
 # =========================
+# Stage 1: learn to take off and hold line formation with forgiving penalties.
+# Stage 2: stronger formation and centroid tracking.
+# Stage 3: final strict line formation + landing objective.
 curriculum = [
     {
-        "goal_bonus": 300.0,
-        "phase_bonus": 60.0,
-        "distance_weight": 2.0,
+        "goal_bonus": 450.0,
+        "phase_bonus": 70.0,
+        "alive_reward": 0.18,
+        "centroid_weight": 2.5,
+        "distance_weight": 1.5,
+        "formation_weight": 4.0,
         "velocity_weight": 0.8,
         "attitude_weight": 0.8,
-        "alive_reward": 0.2,
-        "collision_penalty": 200.0,
+        "smoothness_weight": 0.03,
+        "collision_penalty": 250.0,
         "min_separation": 0.25,
+        "max_formation_error_for_success": 0.25,
     },
     {
-        "goal_bonus": 450.0,
-        "phase_bonus": 80.0,
-        "distance_weight": 2.5,
+        "goal_bonus": 650.0,
+        "phase_bonus": 90.0,
+        "alive_reward": 0.12,
+        "centroid_weight": 3.5,
+        "distance_weight": 2.0,
+        "formation_weight": 6.0,
         "velocity_weight": 1.0,
         "attitude_weight": 1.0,
-        "alive_reward": 0.15,
-        "collision_penalty": 250.0,
+        "smoothness_weight": 0.04,
+        "collision_penalty": 320.0,
         "min_separation": 0.28,
+        "max_formation_error_for_success": 0.20,
     },
     {
-        "goal_bonus": 600.0,
-        "phase_bonus": 100.0,
-        "distance_weight": 3.0,
+        "goal_bonus": 850.0,
+        "phase_bonus": 120.0,
+        "alive_reward": 0.08,
+        "centroid_weight": 4.5,
+        "distance_weight": 2.5,
+        "formation_weight": 8.0,
         "velocity_weight": 1.2,
         "attitude_weight": 1.2,
-        "alive_reward": 0.10,
-        "collision_penalty": 300.0,
+        "smoothness_weight": 0.05,
+        "collision_penalty": 400.0,
         "min_separation": 0.30,
+        "max_formation_error_for_success": 0.18,
     },
 ]
 
@@ -130,15 +145,19 @@ def build_env(stage_cfg):
         max_steps=args.max_steps,
         ctrl_freq=48,
         sim_freq=240,
-        action_scales=(0.04, 0.04, 0.05),
+        action_scales=(0.035, 0.035, 0.04),
         goal_bonus=stage_cfg["goal_bonus"],
         phase_bonus=stage_cfg["phase_bonus"],
+        alive_reward=stage_cfg["alive_reward"],
+        centroid_weight=stage_cfg["centroid_weight"],
         distance_weight=stage_cfg["distance_weight"],
+        formation_weight=stage_cfg["formation_weight"],
         velocity_weight=stage_cfg["velocity_weight"],
         attitude_weight=stage_cfg["attitude_weight"],
-        alive_reward=stage_cfg["alive_reward"],
+        smoothness_weight=stage_cfg["smoothness_weight"],
         collision_penalty=stage_cfg["collision_penalty"],
         min_separation=stage_cfg["min_separation"],
+        max_formation_error_for_success=stage_cfg["max_formation_error_for_success"],
     )
 
 
@@ -183,8 +202,8 @@ def train():
     global curr_stage
 
     wandb.init(
-        project="marl-uav-mission-no-formation",
-        name=f"mappo-3uav-mission-{args.render}",
+        project="marl-uav-v0-4-straight-line-landing",
+        name=f"mappo-3uav-line-landing-{args.render}",
         config=vars(args),
         resume="allow",
     )
@@ -205,15 +224,16 @@ def train():
     opt_pol = torch.optim.Adam(policy.parameters(), lr=args.lr_policy)
     opt_val = torch.optim.Adam(value.parameters(), lr=args.lr_value)
 
-    ckpt_dir = "checkpoints_realistic"
+    ckpt_dir = "checkpoints_v0_4_line_landing"
+    model_dir = "marl/models/v0_4_line_landing"
     os.makedirs(ckpt_dir, exist_ok=True)
-    os.makedirs("marl/models", exist_ok=True)
+    os.makedirs(model_dir, exist_ok=True)
 
     start_episode = 1
     best_reward = -np.inf
     success_streak = 0
     patience = 0
-    patience_limit = 800
+    patience_limit = 1000
 
     if args.resume:
         ep_path = os.path.join(ckpt_dir, "last_episode.txt")
@@ -247,7 +267,7 @@ def train():
 
         print(f"Resumed from episode {start_episode}, curriculum stage {curr_stage + 1}")
 
-    csv_file = "training_logs_realistic.csv"
+    csv_file = "training_logs_v0_4_line_landing.csv"
 
     if not os.path.exists(csv_file):
         with open(csv_file, "w", newline="") as f:
@@ -260,21 +280,30 @@ def train():
                 "success",
                 "completed_agents",
                 "phase_changes",
+                "phase_label",
                 "mean_phase",
+                "centroid_error",
+                "formation_error",
+                "max_agent_formation_error",
                 "mean_dist_to_target",
                 "max_dist_to_target",
-                "mean_xy_error",
                 "mean_speed",
+                "max_speed",
                 "mean_attitude_error",
+                "smoothness_cost",
                 "collision_count",
                 "min_pair_dist",
                 "crashed",
-                "uav0_phase",
-                "uav1_phase",
-                "uav2_phase",
+                "landed",
+                "centroid_x",
+                "centroid_y",
+                "centroid_z",
                 "uav0_x",
                 "uav1_x",
                 "uav2_x",
+                "uav0_y",
+                "uav1_y",
+                "uav2_y",
                 "uav0_z",
                 "uav1_z",
                 "uav2_z",
@@ -466,8 +495,8 @@ def train():
 
         if ep_reward > best_reward:
             best_reward = ep_reward
-            torch.save(policy.state_dict(), "marl/models/best_shared_policy_realistic.pth")
-            torch.save(value.state_dict(), "marl/models/best_central_value_realistic.pth")
+            torch.save(policy.state_dict(), os.path.join(model_dir, "best_shared_policy_v0_4.pth"))
+            torch.save(value.state_dict(), os.path.join(model_dir, "best_central_value_v0_4.pth"))
 
         if success:
             success_streak += 1
@@ -492,17 +521,28 @@ def train():
             "completed_agents": float(last_info.get("completed_agents", 0)),
             "phase_changes": float(last_info.get("phase_changes", 0)),
             "mean_phase": float(last_info.get("mean_phase", 0.0)),
+            "centroid_error": float(last_info.get("centroid_error", math.nan)),
+            "formation_error": float(last_info.get("formation_error", math.nan)),
+            "max_agent_formation_error": float(last_info.get("max_agent_formation_error", math.nan)),
             "mean_dist_to_target": float(last_info.get("mean_dist_to_target", math.nan)),
             "max_dist_to_target": float(last_info.get("max_dist_to_target", math.nan)),
-            "mean_xy_error": float(last_info.get("mean_xy_error", math.nan)),
             "mean_speed": float(last_info.get("mean_speed", math.nan)),
+            "max_speed": float(last_info.get("max_speed", math.nan)),
             "mean_attitude_error": float(last_info.get("mean_attitude_error", math.nan)),
+            "smoothness_cost": float(last_info.get("smoothness_cost", math.nan)),
             "collision_count": float(last_info.get("collision_count", 0)),
             "min_pair_dist": float(last_info.get("min_pair_dist", math.nan)),
             "crashed": float(last_info.get("crashed", False)),
+            "landed": float(last_info.get("landed", False)),
+            "centroid_x": float(last_info.get("centroid_x", math.nan)),
+            "centroid_y": float(last_info.get("centroid_y", math.nan)),
+            "centroid_z": float(last_info.get("centroid_z", math.nan)),
             "uav0_x": float(last_info.get("uav0_x", math.nan)),
             "uav1_x": float(last_info.get("uav1_x", math.nan)),
             "uav2_x": float(last_info.get("uav2_x", math.nan)),
+            "uav0_y": float(last_info.get("uav0_y", math.nan)),
+            "uav1_y": float(last_info.get("uav1_y", math.nan)),
+            "uav2_y": float(last_info.get("uav2_y", math.nan)),
             "uav0_z": float(last_info.get("uav0_z", math.nan)),
             "uav1_z": float(last_info.get("uav1_z", math.nan)),
             "uav2_z": float(last_info.get("uav2_z", math.nan)),
@@ -525,21 +565,30 @@ def train():
                 int(success),
                 last_info.get("completed_agents", 0),
                 last_info.get("phase_changes", 0),
+                last_info.get("phase_label", ""),
                 last_info.get("mean_phase", 0.0),
+                last_info.get("centroid_error", 0.0),
+                last_info.get("formation_error", 0.0),
+                last_info.get("max_agent_formation_error", 0.0),
                 last_info.get("mean_dist_to_target", 0.0),
                 last_info.get("max_dist_to_target", 0.0),
-                last_info.get("mean_xy_error", 0.0),
                 last_info.get("mean_speed", 0.0),
+                last_info.get("max_speed", 0.0),
                 last_info.get("mean_attitude_error", 0.0),
+                last_info.get("smoothness_cost", 0.0),
                 last_info.get("collision_count", 0),
                 last_info.get("min_pair_dist", 0.0),
                 int(last_info.get("crashed", False)),
-                last_info.get("uav0_phase", ""),
-                last_info.get("uav1_phase", ""),
-                last_info.get("uav2_phase", ""),
+                int(last_info.get("landed", False)),
+                last_info.get("centroid_x", 0.0),
+                last_info.get("centroid_y", 0.0),
+                last_info.get("centroid_z", 0.0),
                 last_info.get("uav0_x", 0.0),
                 last_info.get("uav1_x", 0.0),
                 last_info.get("uav2_x", 0.0),
+                last_info.get("uav0_y", 0.0),
+                last_info.get("uav1_y", 0.0),
+                last_info.get("uav2_y", 0.0),
                 last_info.get("uav0_z", 0.0),
                 last_info.get("uav1_z", 0.0),
                 last_info.get("uav2_z", 0.0),
@@ -555,11 +604,12 @@ def train():
                 f"Stage: {curr_stage + 1} | "
                 f"Reward: {ep_reward:8.2f} | "
                 f"Success: {success} | "
-                f"Agents: {last_info.get('completed_agents', 0)}/3 | "
-                f"MeanPhase: {float(last_info.get('mean_phase', 0.0)):.2f} | "
-                f"Dist: {float(last_info.get('mean_dist_to_target', 0.0)):.2f} | "
-                f"Speed: {float(last_info.get('mean_speed', 0.0)):.2f} | "
-                f"MinSep: {float(last_info.get('min_pair_dist', 0.0)):.2f} | "
+                f"Phase: {last_info.get('phase_label', '')} | "
+                f"CentErr: {float(last_info.get('centroid_error', 0.0)):.3f} | "
+                f"FormErr: {float(last_info.get('formation_error', 0.0)):.3f} | "
+                f"Dist: {float(last_info.get('mean_dist_to_target', 0.0)):.3f} | "
+                f"Speed: {float(last_info.get('mean_speed', 0.0)):.3f} | "
+                f"MinSep: {float(last_info.get('min_pair_dist', 0.0)):.3f} | "
                 f"Collisions: {int(last_info.get('collision_count', 0))} | "
                 f"Crashed: {bool(last_info.get('crashed', False))}"
             )
