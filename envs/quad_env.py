@@ -10,7 +10,7 @@ from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
 class MultiUAVRealisticEnv(gym.Env):
     """
-    v0.4 Multi-UAV straight-line formation + landing environment.
+    v0.5 Multi-UAV single-file column formation + landing environment.
 
     Platform:
         gym-pybullet-drones CtrlAviary with Crazyflie 2.x model.
@@ -18,20 +18,23 @@ class MultiUAVRealisticEnv(gym.Env):
     Mission:
         3 UAVs operate as one formation group.
 
-        Phase 0: take off and establish straight-line formation at A.
-        Phase 1: move the formation center from A to B while preserving line geometry.
+        Phase 0: take off and establish single-file column formation at A.
+        Phase 1: move the formation center from A to B while preserving column geometry.
         Phase 2: land the formation at B.
 
     Formation:
-        The line is defined by fixed offsets around a moving formation center:
-            UAV 0: center / leader reference
-            UAV 1: left follower
-            UAV 2: right follower
+        Single-file / column formation along the x-axis.
 
-        Default offsets:
-            [0.0,  0.0, 0.0]
-            [0.0, -0.6, 0.0]
-            [0.0,  0.6, 0.0]
+        UAV 0: front / leader
+        UAV 1: middle follower
+        UAV 2: rear follower
+
+        Direction of travel is positive x.
+
+        Formation layout:
+
+            UAV 2 ---- UAV 1 ---- UAV 0  ---> motion direction
+            rear       middle     front
 
     High-level action:
         Each agent outputs a small xyz residual correction around its assigned
@@ -60,7 +63,7 @@ class MultiUAVRealisticEnv(gym.Env):
         sim_freq=240,
         action_scales=(0.035, 0.035, 0.04),
         # Mission rewards
-        goal_bonus=700.0,
+        goal_bonus=750.0,
         phase_bonus=100.0,
         alive_reward=0.10,
         centroid_weight=4.0,
@@ -71,13 +74,14 @@ class MultiUAVRealisticEnv(gym.Env):
         smoothness_weight=0.05,
         # Safety rewards / penalties
         collision_penalty=350.0,
-        min_separation=0.30,
+        min_separation=0.32,
         max_formation_error_for_success=0.18,
+        formation_spacing=0.70,
     ):
         super().__init__()
 
         if num_agents != 3:
-            raise ValueError("v0.4 straight-line formation expects exactly 3 UAVs.")
+            raise ValueError("v0.5 single-file column formation expects exactly 3 UAVs.")
 
         self.num_agents = num_agents
         self.max_steps = max_steps
@@ -100,22 +104,31 @@ class MultiUAVRealisticEnv(gym.Env):
         self.collision_penalty = collision_penalty
         self.min_separation = min_separation
         self.max_formation_error_for_success = max_formation_error_for_success
+        self.formation_spacing = formation_spacing
 
-        # -----------------------------
-        # v0.4 formation geometry
-        # -----------------------------
+        # ---------------------------------------------------------
+        # v0.5 single-file / column formation geometry
+        # ---------------------------------------------------------
+        # Important:
+        # These offsets are zero-mean, so the formation centroid remains equal
+        # to the moving center target.
+        #
+        # UAV 0 is in front, UAV 1 is middle, UAV 2 is rear.
+        # Direction of travel is positive x.
         self.formation_offsets = np.array(
             [
-                [0.0,  0.0, 0.0],
-                [0.0, -0.6, 0.0],
-                [0.0,  0.6, 0.0],
+                [ self.formation_spacing, 0.0, 0.0],   # UAV 0: front / leader
+                [ 0.0,                    0.0, 0.0],   # UAV 1: middle
+                [-self.formation_spacing, 0.0, 0.0],   # UAV 2: rear
             ],
             dtype=np.float32,
         )
 
+        # Mission centers.
+        # The center is the formation centroid, not necessarily UAV 0.
         self.center_A_takeoff = np.array([0.0, 0.0, 1.00], dtype=np.float32)
-        self.center_B_hover = np.array([2.2, 0.0, 1.00], dtype=np.float32)
-        self.center_B_land = np.array([2.2, 0.0, 0.10], dtype=np.float32)
+        self.center_B_hover = np.array([2.4, 0.0, 1.00], dtype=np.float32)
+        self.center_B_land = np.array([2.4, 0.0, 0.10], dtype=np.float32)
 
         self.start_center = np.array([0.0, 0.0, 0.20], dtype=np.float32)
         self.start_positions = self.start_center[None, :] + self.formation_offsets
@@ -155,9 +168,6 @@ class MultiUAVRealisticEnv(gym.Env):
             dtype=np.float32,
         )
 
-        # Observation per UAV:
-        # pos(3), vel(3), rpy(3), rel_own_target(3), rel_centroid_target(3),
-        # formation_error(1), phase(1) = 17
         self.obs_dim_per_agent = 17
 
         self.observation_space = spaces.Box(
@@ -197,10 +207,10 @@ class MultiUAVRealisticEnv(gym.Env):
         residual = action * self.action_scales[None, :]
         self.current_targets = base_targets + residual
 
-        # Keep all targets inside a safe training volume while preserving the line corridor.
+        # Keep all targets inside a safe training volume.
         for i in range(self.num_agents):
-            self.current_targets[i, 0] = np.clip(self.current_targets[i, 0], -0.3, 2.5)
-            self.current_targets[i, 1] = np.clip(self.current_targets[i, 1], -1.0, 1.0)
+            self.current_targets[i, 0] = np.clip(self.current_targets[i, 0], -1.0, 3.4)
+            self.current_targets[i, 1] = np.clip(self.current_targets[i, 1], -0.6, 0.6)
 
             if self.phase == 2:
                 self.current_targets[i, 2] = np.clip(self.current_targets[i, 2], 0.08, 1.10)
@@ -299,8 +309,9 @@ class MultiUAVRealisticEnv(gym.Env):
 
     def _compute_formation_error(self, positions):
         """
-        Computes how far the current UAV positions are from the desired straight-line
-        geometry after aligning the desired formation to the current centroid.
+        Computes how far the current UAV positions are from the desired
+        single-file geometry after aligning the desired formation to the
+        current centroid.
 
         This makes the metric independent of where the formation is in the arena.
         """
@@ -309,6 +320,20 @@ class MultiUAVRealisticEnv(gym.Env):
         per_agent_error = np.linalg.norm(positions - desired_positions, axis=1)
         mean_error = float(np.mean(per_agent_error))
         return mean_error, per_agent_error
+
+    def _compute_column_spacing_error(self, positions):
+        """
+        Extra interpretable metric for v0.5:
+        Measures whether UAV0-UAV1 and UAV1-UAV2 spacing is close to the desired
+        single-file spacing.
+        """
+        d01 = float(np.linalg.norm(positions[0] - positions[1]))
+        d12 = float(np.linalg.norm(positions[1] - positions[2]))
+        spacing_error = 0.5 * (
+            abs(d01 - self.formation_spacing)
+            + abs(d12 - self.formation_spacing)
+        )
+        return spacing_error, d01, d12
 
     def _compute_reward_done_info(self, sim_obs, action):
         sim_obs = self._to_numpy_obs(sim_obs)
@@ -322,6 +347,8 @@ class MultiUAVRealisticEnv(gym.Env):
         centroid = np.mean(positions, axis=0)
 
         formation_error, per_agent_formation_error = self._compute_formation_error(positions)
+        column_spacing_error, d01, d12 = self._compute_column_spacing_error(positions)
+
         centroid_error = float(np.linalg.norm(center_target - centroid))
         mean_target_dist = float(np.mean(np.linalg.norm(base_targets - positions, axis=1)))
         max_target_dist = float(np.max(np.linalg.norm(base_targets - positions, axis=1)))
@@ -330,12 +357,12 @@ class MultiUAVRealisticEnv(gym.Env):
         mean_attitude_error = float(np.mean(np.linalg.norm(rpys[:, 0:2], axis=1)))
         smoothness_cost = float(np.mean(np.linalg.norm(action - self.prev_action, axis=1)))
 
-        # Shared team reward: all agents receive the same mission-level feedback.
         total_reward = 0.0
         total_reward += self.alive_reward * self.num_agents
         total_reward += -self.centroid_weight * centroid_error
         total_reward += -self.distance_weight * mean_target_dist
         total_reward += -self.formation_weight * formation_error
+        total_reward += -2.0 * column_spacing_error
         total_reward += -self.velocity_weight * mean_speed
         total_reward += -self.attitude_weight * mean_attitude_error
         total_reward += -self.smoothness_weight * smoothness_cost
@@ -345,6 +372,8 @@ class MultiUAVRealisticEnv(gym.Env):
             total_reward += 8.0
         if formation_error < 0.15:
             total_reward += 15.0
+        if column_spacing_error < 0.15:
+            total_reward += 10.0
         if centroid_error < 0.25:
             total_reward += 8.0
         if mean_target_dist < 0.25 and formation_error < 0.20:
@@ -357,6 +386,7 @@ class MultiUAVRealisticEnv(gym.Env):
             if (
                 centroid_error < 0.25
                 and formation_error < 0.22
+                and column_spacing_error < 0.20
                 and mean_speed < 0.65
                 and self.phase_counter > 50
             ):
@@ -365,11 +395,12 @@ class MultiUAVRealisticEnv(gym.Env):
                 total_reward += self.phase_bonus
                 phase_changes += 1
 
-        # Phase 1 -> Phase 2: formation reached B while preserving line shape.
+        # Phase 1 -> Phase 2: formation reached B while preserving column shape.
         elif self.phase == 1:
             if (
                 centroid_error < 0.30
                 and formation_error < 0.25
+                and column_spacing_error < 0.22
                 and mean_speed < 0.80
                 and self.phase_counter > 250
             ):
@@ -410,6 +441,7 @@ class MultiUAVRealisticEnv(gym.Env):
             and abs(centroid[1] - self.center_B_land[1]) < 0.20
             and centroid[2] < 0.22
             and formation_error < self.max_formation_error_for_success
+            and column_spacing_error < 0.18
             and mean_speed < 0.55
             and mean_attitude_error < 0.70
             and not crashed
@@ -438,6 +470,9 @@ class MultiUAVRealisticEnv(gym.Env):
             "max_dist_to_target": float(max_target_dist),
             "centroid_error": float(centroid_error),
             "formation_error": float(formation_error),
+            "column_spacing_error": float(column_spacing_error),
+            "spacing_uav0_uav1": float(d01),
+            "spacing_uav1_uav2": float(d12),
             "max_agent_formation_error": float(np.max(per_agent_formation_error)),
             "mean_speed": float(mean_speed),
             "max_speed": float(max_speed),
@@ -456,6 +491,9 @@ class MultiUAVRealisticEnv(gym.Env):
             "target_center_x": float(center_target[0]),
             "target_center_y": float(center_target[1]),
             "target_center_z": float(center_target[2]),
+            "uav0_role": "front_leader",
+            "uav1_role": "middle_follower",
+            "uav2_role": "rear_follower",
             "uav0_phase": phase_label,
             "uav1_phase": phase_label,
             "uav2_phase": phase_label,
@@ -474,10 +512,10 @@ class MultiUAVRealisticEnv(gym.Env):
 
     def _phase_name(self, phase):
         if phase == 0:
-            return "TAKEOFF_FORMATION_A"
+            return "TAKEOFF_COLUMN_FORMATION_A"
         if phase == 1:
-            return "MOVE_FORMATION_TO_B"
-        return "LAND_FORMATION_B"
+            return "MOVE_COLUMN_FORMATION_TO_B"
+        return "LAND_COLUMN_FORMATION_B"
 
     def _to_numpy_obs(self, sim_obs):
         """

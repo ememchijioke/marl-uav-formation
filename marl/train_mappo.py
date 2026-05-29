@@ -37,11 +37,11 @@ args = parser.parse_args()
 
 
 # =========================
-# v0.4 Curriculum
+# v0.5 Curriculum
 # =========================
-# Stage 1: learn to take off and hold line formation with forgiving penalties.
-# Stage 2: stronger formation and centroid tracking.
-# Stage 3: final strict line formation + landing objective.
+# Stage 1: learn to take off and hold single-file formation with forgiving penalties.
+# Stage 2: stronger column geometry and centroid tracking.
+# Stage 3: final strict single-file column formation + landing objective.
 curriculum = [
     {
         "goal_bonus": 450.0,
@@ -54,7 +54,7 @@ curriculum = [
         "attitude_weight": 0.8,
         "smoothness_weight": 0.03,
         "collision_penalty": 250.0,
-        "min_separation": 0.25,
+        "min_separation": 0.28,
         "max_formation_error_for_success": 0.25,
     },
     {
@@ -68,7 +68,7 @@ curriculum = [
         "attitude_weight": 1.0,
         "smoothness_weight": 0.04,
         "collision_penalty": 320.0,
-        "min_separation": 0.28,
+        "min_separation": 0.30,
         "max_formation_error_for_success": 0.20,
     },
     {
@@ -82,7 +82,7 @@ curriculum = [
         "attitude_weight": 1.2,
         "smoothness_weight": 0.05,
         "collision_penalty": 400.0,
-        "min_separation": 0.30,
+        "min_separation": 0.32,
         "max_formation_error_for_success": 0.18,
     },
 ]
@@ -158,6 +158,7 @@ def build_env(stage_cfg):
         collision_penalty=stage_cfg["collision_penalty"],
         min_separation=stage_cfg["min_separation"],
         max_formation_error_for_success=stage_cfg["max_formation_error_for_success"],
+        formation_spacing=0.70,
     )
 
 
@@ -202,8 +203,8 @@ def train():
     global curr_stage
 
     wandb.init(
-        project="marl-uav-v0-4-straight-line-landing",
-        name=f"mappo-3uav-line-landing-{args.render}",
+        project="marl-uav-v0-5-column-formation-landing",
+        name=f"mappo-3uav-column-landing-{args.render}",
         config=vars(args),
         resume="allow",
     )
@@ -224,8 +225,8 @@ def train():
     opt_pol = torch.optim.Adam(policy.parameters(), lr=args.lr_policy)
     opt_val = torch.optim.Adam(value.parameters(), lr=args.lr_value)
 
-    ckpt_dir = "checkpoints_v0_4_line_landing"
-    model_dir = "marl/models/v0_4_line_landing"
+    ckpt_dir = "checkpoints_v0_5_column_landing"
+    model_dir = "marl/models/v0_5_column_landing"
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
@@ -267,7 +268,7 @@ def train():
 
         print(f"Resumed from episode {start_episode}, curriculum stage {curr_stage + 1}")
 
-    csv_file = "training_logs_v0_4_line_landing.csv"
+    csv_file = "training_logs_v0_5_column_landing.csv"
 
     if not os.path.exists(csv_file):
         with open(csv_file, "w", newline="") as f:
@@ -284,6 +285,9 @@ def train():
                 "mean_phase",
                 "centroid_error",
                 "formation_error",
+                "column_spacing_error",
+                "spacing_uav0_uav1",
+                "spacing_uav1_uav2",
                 "max_agent_formation_error",
                 "mean_dist_to_target",
                 "max_dist_to_target",
@@ -495,8 +499,8 @@ def train():
 
         if ep_reward > best_reward:
             best_reward = ep_reward
-            torch.save(policy.state_dict(), os.path.join(model_dir, "best_shared_policy_v0_4.pth"))
-            torch.save(value.state_dict(), os.path.join(model_dir, "best_central_value_v0_4.pth"))
+            torch.save(policy.state_dict(), os.path.join(model_dir, "best_shared_policy_v0_5.pth"))
+            torch.save(value.state_dict(), os.path.join(model_dir, "best_central_value_v0_5.pth"))
 
         if success:
             success_streak += 1
@@ -523,6 +527,9 @@ def train():
             "mean_phase": float(last_info.get("mean_phase", 0.0)),
             "centroid_error": float(last_info.get("centroid_error", math.nan)),
             "formation_error": float(last_info.get("formation_error", math.nan)),
+            "column_spacing_error": float(last_info.get("column_spacing_error", math.nan)),
+            "spacing_uav0_uav1": float(last_info.get("spacing_uav0_uav1", math.nan)),
+            "spacing_uav1_uav2": float(last_info.get("spacing_uav1_uav2", math.nan)),
             "max_agent_formation_error": float(last_info.get("max_agent_formation_error", math.nan)),
             "mean_dist_to_target": float(last_info.get("mean_dist_to_target", math.nan)),
             "max_dist_to_target": float(last_info.get("max_dist_to_target", math.nan)),
@@ -569,6 +576,9 @@ def train():
                 last_info.get("mean_phase", 0.0),
                 last_info.get("centroid_error", 0.0),
                 last_info.get("formation_error", 0.0),
+                last_info.get("column_spacing_error", 0.0),
+                last_info.get("spacing_uav0_uav1", 0.0),
+                last_info.get("spacing_uav1_uav2", 0.0),
                 last_info.get("max_agent_formation_error", 0.0),
                 last_info.get("mean_dist_to_target", 0.0),
                 last_info.get("max_dist_to_target", 0.0),
@@ -607,6 +617,9 @@ def train():
                 f"Phase: {last_info.get('phase_label', '')} | "
                 f"CentErr: {float(last_info.get('centroid_error', 0.0)):.3f} | "
                 f"FormErr: {float(last_info.get('formation_error', 0.0)):.3f} | "
+                f"ColumnErr: {float(last_info.get('column_spacing_error', 0.0)):.3f} | "
+                f"D01: {float(last_info.get('spacing_uav0_uav1', 0.0)):.3f} | "
+                f"D12: {float(last_info.get('spacing_uav1_uav2', 0.0)):.3f} | "
                 f"Dist: {float(last_info.get('mean_dist_to_target', 0.0)):.3f} | "
                 f"Speed: {float(last_info.get('mean_speed', 0.0)):.3f} | "
                 f"MinSep: {float(last_info.get('min_pair_dist', 0.0)):.3f} | "

@@ -24,6 +24,8 @@ wandb/
 checkpoints/
 checkpoints_single_uav/
 checkpoints_realistic/
+checkpoints*/
+eval_frames*/
 
 # =========================
 # Model weights
