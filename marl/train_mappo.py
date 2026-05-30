@@ -37,15 +37,15 @@ args = parser.parse_args()
 
 
 # =========================
-# v0.5 Curriculum
+# v0.6 Curriculum
 # =========================
-# Stage 1: learn to take off and hold single-file formation with forgiving penalties.
-# Stage 2: stronger column geometry and centroid tracking.
-# Stage 3: final strict single-file column formation + landing objective.
+# Stage 1: learn to take off and hold triangle formation with forgiving penalties.
+# Stage 2: stronger triangle geometry and centroid tracking.
+# Stage 3: final strict triangle formation + landing objective.
 curriculum = [
     {
-        "goal_bonus": 450.0,
-        "phase_bonus": 70.0,
+        "goal_bonus": 500.0,
+        "phase_bonus": 75.0,
         "alive_reward": 0.18,
         "centroid_weight": 2.5,
         "distance_weight": 1.5,
@@ -53,13 +53,13 @@ curriculum = [
         "velocity_weight": 0.8,
         "attitude_weight": 0.8,
         "smoothness_weight": 0.03,
-        "collision_penalty": 250.0,
-        "min_separation": 0.28,
+        "collision_penalty": 280.0,
+        "min_separation": 0.30,
         "max_formation_error_for_success": 0.25,
     },
     {
-        "goal_bonus": 650.0,
-        "phase_bonus": 90.0,
+        "goal_bonus": 700.0,
+        "phase_bonus": 95.0,
         "alive_reward": 0.12,
         "centroid_weight": 3.5,
         "distance_weight": 2.0,
@@ -67,13 +67,13 @@ curriculum = [
         "velocity_weight": 1.0,
         "attitude_weight": 1.0,
         "smoothness_weight": 0.04,
-        "collision_penalty": 320.0,
-        "min_separation": 0.30,
+        "collision_penalty": 340.0,
+        "min_separation": 0.33,
         "max_formation_error_for_success": 0.20,
     },
     {
-        "goal_bonus": 850.0,
-        "phase_bonus": 120.0,
+        "goal_bonus": 900.0,
+        "phase_bonus": 125.0,
         "alive_reward": 0.08,
         "centroid_weight": 4.5,
         "distance_weight": 2.5,
@@ -81,8 +81,8 @@ curriculum = [
         "velocity_weight": 1.2,
         "attitude_weight": 1.2,
         "smoothness_weight": 0.05,
-        "collision_penalty": 400.0,
-        "min_separation": 0.32,
+        "collision_penalty": 420.0,
+        "min_separation": 0.35,
         "max_formation_error_for_success": 0.18,
     },
 ]
@@ -158,7 +158,7 @@ def build_env(stage_cfg):
         collision_penalty=stage_cfg["collision_penalty"],
         min_separation=stage_cfg["min_separation"],
         max_formation_error_for_success=stage_cfg["max_formation_error_for_success"],
-        formation_spacing=0.70,
+        triangle_side_length=1.0,
     )
 
 
@@ -178,6 +178,7 @@ def compute_gae(rewards, dones, values, next_value, gamma, gae_lambda):
         advantages.insert(0, gae)
 
     returns = [adv + val for adv, val in zip(advantages, values)]
+
     return advantages, returns
 
 
@@ -203,8 +204,8 @@ def train():
     global curr_stage
 
     wandb.init(
-        project="marl-uav-v0-5-column-formation-landing",
-        name=f"mappo-3uav-column-landing-{args.render}",
+        project="marl-uav-v0-6-triangle-formation-landing",
+        name=f"mappo-3uav-triangle-landing-{args.render}",
         config=vars(args),
         resume="allow",
     )
@@ -225,8 +226,9 @@ def train():
     opt_pol = torch.optim.Adam(policy.parameters(), lr=args.lr_policy)
     opt_val = torch.optim.Adam(value.parameters(), lr=args.lr_value)
 
-    ckpt_dir = "checkpoints_v0_5_column_landing"
-    model_dir = "marl/models/v0_5_column_landing"
+    ckpt_dir = "checkpoints_v0_6_triangle_landing"
+    model_dir = "marl/models/v0_6_triangle_landing"
+
     os.makedirs(ckpt_dir, exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
@@ -249,6 +251,7 @@ def train():
                 curr_stage = int(f.read().strip())
 
         stage = curriculum[curr_stage]
+
         env.close()
         env = build_env(stage)
 
@@ -268,11 +271,12 @@ def train():
 
         print(f"Resumed from episode {start_episode}, curriculum stage {curr_stage + 1}")
 
-    csv_file = "training_logs_v0_5_column_landing.csv"
+    csv_file = "training_logs_v0_6_triangle_landing.csv"
 
     if not os.path.exists(csv_file):
         with open(csv_file, "w", newline="") as f:
             writer = csv.writer(f)
+
             writer.writerow([
                 "timestamp",
                 "episode",
@@ -283,34 +287,43 @@ def train():
                 "phase_changes",
                 "phase_label",
                 "mean_phase",
+
                 "centroid_error",
                 "formation_error",
-                "column_spacing_error",
+                "triangle_spacing_error",
                 "spacing_uav0_uav1",
+                "spacing_uav0_uav2",
                 "spacing_uav1_uav2",
                 "max_agent_formation_error",
+
                 "mean_dist_to_target",
                 "max_dist_to_target",
                 "mean_speed",
                 "max_speed",
                 "mean_attitude_error",
                 "smoothness_cost",
+
                 "collision_count",
                 "min_pair_dist",
                 "crashed",
                 "landed",
+
                 "centroid_x",
                 "centroid_y",
                 "centroid_z",
+
                 "uav0_x",
                 "uav1_x",
                 "uav2_x",
+
                 "uav0_y",
                 "uav1_y",
                 "uav2_y",
+
                 "uav0_z",
                 "uav1_z",
                 "uav2_z",
+
                 "wandb_url",
             ])
 
@@ -499,8 +512,14 @@ def train():
 
         if ep_reward > best_reward:
             best_reward = ep_reward
-            torch.save(policy.state_dict(), os.path.join(model_dir, "best_shared_policy_v0_5.pth"))
-            torch.save(value.state_dict(), os.path.join(model_dir, "best_central_value_v0_5.pth"))
+            torch.save(
+                policy.state_dict(),
+                os.path.join(model_dir, "best_shared_policy_v0_6.pth"),
+            )
+            torch.save(
+                value.state_dict(),
+                os.path.join(model_dir, "best_central_value_v0_6.pth"),
+            )
 
         if success:
             success_streak += 1
@@ -512,9 +531,12 @@ def train():
         if success_streak >= consecutive_success_needed and curr_stage < len(curriculum) - 1:
             curr_stage += 1
             stage = curriculum[curr_stage]
+
             env.close()
             env = build_env(stage)
+
             success_streak = 0
+
             print(f"\nCurriculum advanced to stage {curr_stage + 1}: {stage}")
 
         wandb.log({
@@ -525,34 +547,43 @@ def train():
             "completed_agents": float(last_info.get("completed_agents", 0)),
             "phase_changes": float(last_info.get("phase_changes", 0)),
             "mean_phase": float(last_info.get("mean_phase", 0.0)),
+
             "centroid_error": float(last_info.get("centroid_error", math.nan)),
             "formation_error": float(last_info.get("formation_error", math.nan)),
-            "column_spacing_error": float(last_info.get("column_spacing_error", math.nan)),
+            "triangle_spacing_error": float(last_info.get("triangle_spacing_error", math.nan)),
             "spacing_uav0_uav1": float(last_info.get("spacing_uav0_uav1", math.nan)),
+            "spacing_uav0_uav2": float(last_info.get("spacing_uav0_uav2", math.nan)),
             "spacing_uav1_uav2": float(last_info.get("spacing_uav1_uav2", math.nan)),
             "max_agent_formation_error": float(last_info.get("max_agent_formation_error", math.nan)),
+
             "mean_dist_to_target": float(last_info.get("mean_dist_to_target", math.nan)),
             "max_dist_to_target": float(last_info.get("max_dist_to_target", math.nan)),
             "mean_speed": float(last_info.get("mean_speed", math.nan)),
             "max_speed": float(last_info.get("max_speed", math.nan)),
             "mean_attitude_error": float(last_info.get("mean_attitude_error", math.nan)),
             "smoothness_cost": float(last_info.get("smoothness_cost", math.nan)),
+
             "collision_count": float(last_info.get("collision_count", 0)),
             "min_pair_dist": float(last_info.get("min_pair_dist", math.nan)),
             "crashed": float(last_info.get("crashed", False)),
             "landed": float(last_info.get("landed", False)),
+
             "centroid_x": float(last_info.get("centroid_x", math.nan)),
             "centroid_y": float(last_info.get("centroid_y", math.nan)),
             "centroid_z": float(last_info.get("centroid_z", math.nan)),
+
             "uav0_x": float(last_info.get("uav0_x", math.nan)),
             "uav1_x": float(last_info.get("uav1_x", math.nan)),
             "uav2_x": float(last_info.get("uav2_x", math.nan)),
+
             "uav0_y": float(last_info.get("uav0_y", math.nan)),
             "uav1_y": float(last_info.get("uav1_y", math.nan)),
             "uav2_y": float(last_info.get("uav2_y", math.nan)),
+
             "uav0_z": float(last_info.get("uav0_z", math.nan)),
             "uav1_z": float(last_info.get("uav1_z", math.nan)),
             "uav2_z": float(last_info.get("uav2_z", math.nan)),
+
             "entropy_coef": float(entropy_coef),
             "policy_loss": float(total_policy_loss.item()),
             "value_loss": float(total_value_loss.item()),
@@ -564,6 +595,7 @@ def train():
 
         with open(csv_file, "a", newline="") as f:
             writer = csv.writer(f)
+
             writer.writerow([
                 timestamp,
                 ep,
@@ -574,34 +606,43 @@ def train():
                 last_info.get("phase_changes", 0),
                 last_info.get("phase_label", ""),
                 last_info.get("mean_phase", 0.0),
+
                 last_info.get("centroid_error", 0.0),
                 last_info.get("formation_error", 0.0),
-                last_info.get("column_spacing_error", 0.0),
+                last_info.get("triangle_spacing_error", 0.0),
                 last_info.get("spacing_uav0_uav1", 0.0),
+                last_info.get("spacing_uav0_uav2", 0.0),
                 last_info.get("spacing_uav1_uav2", 0.0),
                 last_info.get("max_agent_formation_error", 0.0),
+
                 last_info.get("mean_dist_to_target", 0.0),
                 last_info.get("max_dist_to_target", 0.0),
                 last_info.get("mean_speed", 0.0),
                 last_info.get("max_speed", 0.0),
                 last_info.get("mean_attitude_error", 0.0),
                 last_info.get("smoothness_cost", 0.0),
+
                 last_info.get("collision_count", 0),
                 last_info.get("min_pair_dist", 0.0),
                 int(last_info.get("crashed", False)),
                 int(last_info.get("landed", False)),
+
                 last_info.get("centroid_x", 0.0),
                 last_info.get("centroid_y", 0.0),
                 last_info.get("centroid_z", 0.0),
+
                 last_info.get("uav0_x", 0.0),
                 last_info.get("uav1_x", 0.0),
                 last_info.get("uav2_x", 0.0),
+
                 last_info.get("uav0_y", 0.0),
                 last_info.get("uav1_y", 0.0),
                 last_info.get("uav2_y", 0.0),
+
                 last_info.get("uav0_z", 0.0),
                 last_info.get("uav1_z", 0.0),
                 last_info.get("uav2_z", 0.0),
+
                 wandb_url,
             ])
 
@@ -617,8 +658,9 @@ def train():
                 f"Phase: {last_info.get('phase_label', '')} | "
                 f"CentErr: {float(last_info.get('centroid_error', 0.0)):.3f} | "
                 f"FormErr: {float(last_info.get('formation_error', 0.0)):.3f} | "
-                f"ColumnErr: {float(last_info.get('column_spacing_error', 0.0)):.3f} | "
+                f"TriErr: {float(last_info.get('triangle_spacing_error', 0.0)):.3f} | "
                 f"D01: {float(last_info.get('spacing_uav0_uav1', 0.0)):.3f} | "
+                f"D02: {float(last_info.get('spacing_uav0_uav2', 0.0)):.3f} | "
                 f"D12: {float(last_info.get('spacing_uav1_uav2', 0.0)):.3f} | "
                 f"Dist: {float(last_info.get('mean_dist_to_target', 0.0)):.3f} | "
                 f"Speed: {float(last_info.get('mean_speed', 0.0)):.3f} | "

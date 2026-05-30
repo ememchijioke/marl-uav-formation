@@ -20,14 +20,14 @@ from envs.quad_env import MultiUAVRealisticEnv
 NUM_EVAL_EPISODES = 1
 MAX_STEPS = 700
 
-# v0.5 trained model path
-MODEL_PATH = "marl/models/v0_5_column_landing/best_shared_policy_v0_5.pth"
-FALLBACK_MODEL_PATH = "checkpoints_v0_5_column_landing/shared_policy.pth"
+# v0.6 trained model path
+MODEL_PATH = "marl/models/v0_6_triangle_landing/best_shared_policy_v0_6.pth"
+FALLBACK_MODEL_PATH = "checkpoints_v0_6_triangle_landing/shared_policy.pth"
 
 # Rendering / saving
 RENDER = "human"          # "human" or "headless"
 SAVE_VIDEO = True
-VIDEO_PATH = "eval_v0_5_column_formation.mp4"
+VIDEO_PATH = "eval_v0_6_triangle_formation.mp4"
 
 # Video quality
 WIDTH = 1280
@@ -36,7 +36,7 @@ FPS = 20
 
 # Save raw PNG frames for high-quality ffmpeg encoding
 SAVE_FRAMES = True
-FRAME_DIR = "eval_frames_v0_5_column"
+FRAME_DIR = "eval_frames_v0_6_triangle"
 
 # Camera mode
 CAMERA_MODE = "follow"    # "follow" or "fixed"
@@ -80,6 +80,10 @@ class SharedPolicyNet(nn.Module):
 # ============================================================
 
 def get_team_centroid(env):
+    """
+    Compute the centroid of all UAVs from PyBullet drone states.
+    Used by the follow-camera mode.
+    """
     positions = []
 
     for i in range(env.num_agents):
@@ -90,6 +94,10 @@ def get_team_centroid(env):
 
 
 def get_camera_settings(env):
+    """
+    Central camera settings for both saved video and visual consistency.
+    """
+
     if CAMERA_MODE == "follow":
         centroid = get_team_centroid(env)
 
@@ -99,15 +107,16 @@ def get_camera_settings(env):
             float(centroid[2] + 0.05),
         ]
 
-        # Slightly farther than v0.4 so the full column is visible.
-        distance = 2.3
+        # Slightly wider than column formation so triangle is visible.
+        distance = 2.5
         yaw = 45
-        pitch = -15
-        fov = 38.0
+        pitch = -18
+        fov = 42.0
 
     else:
+        # Fixed camera for the full A -> B -> landing mission.
         target = [1.4, 0.0, 0.9]
-        distance = 4.6
+        distance = 4.8
         yaw = 45
         pitch = -24
         fov = 55.0
@@ -116,6 +125,12 @@ def get_camera_settings(env):
 
 
 def reset_live_camera(env):
+    """
+    Reset the PyBullet GUI camera.
+
+    This affects the live window. The saved video still uses getCameraImage(),
+    but matching both views makes debugging easier.
+    """
     target, distance, yaw, pitch, _ = get_camera_settings(env)
 
     p.resetDebugVisualizerCamera(
@@ -127,6 +142,9 @@ def reset_live_camera(env):
 
 
 def capture_frame(env):
+    """
+    Capture a high-quality frame from PyBullet for video saving.
+    """
     target, distance, yaw, pitch, fov = get_camera_settings(env)
 
     view_matrix = p.computeViewMatrixFromYawPitchRoll(
@@ -159,15 +177,44 @@ def capture_frame(env):
     return frame
 
 
+def draw_triangle_edges(p1, p2, p3, color, width=3.0):
+    """
+    Draw the three sides of a triangle.
+    """
+    p.addUserDebugLine(
+        lineFromXYZ=p1,
+        lineToXYZ=p2,
+        lineColorRGB=color,
+        lineWidth=width,
+        lifeTime=0,
+    )
+
+    p.addUserDebugLine(
+        lineFromXYZ=p1,
+        lineToXYZ=p3,
+        lineColorRGB=color,
+        lineWidth=width,
+        lifeTime=0,
+    )
+
+    p.addUserDebugLine(
+        lineFromXYZ=p2,
+        lineToXYZ=p3,
+        lineColorRGB=color,
+        lineWidth=width,
+        lifeTime=0,
+    )
+
+
 def draw_reference_path(env):
     """
-    Draw clean v0.5 reference guide lines.
+    Draw clean v0.6 reference guide lines.
 
     The guide lines show:
     - each UAV's takeoff path
     - each UAV's A to B travel path
     - each UAV's landing path
-    - the column shape at A and B
+    - triangle shape at A and B
     """
 
     for i in range(env.num_agents):
@@ -203,43 +250,27 @@ def draw_reference_path(env):
             lifeTime=0,
         )
 
-    # Column shape at A: rear -> middle -> front
-    p.addUserDebugLine(
-        lineFromXYZ=env.hover_A_targets[2].tolist(),
-        lineToXYZ=env.hover_A_targets[1].tolist(),
-        lineColorRGB=[0.0, 0.6, 1.0],
-        lineWidth=3.0,
-        lifeTime=0,
+    # Triangle shape at A
+    draw_triangle_edges(
+        env.hover_A_targets[0].tolist(),
+        env.hover_A_targets[1].tolist(),
+        env.hover_A_targets[2].tolist(),
+        color=[0.0, 0.6, 1.0],
+        width=3.0,
     )
 
-    p.addUserDebugLine(
-        lineFromXYZ=env.hover_A_targets[1].tolist(),
-        lineToXYZ=env.hover_A_targets[0].tolist(),
-        lineColorRGB=[0.0, 0.6, 1.0],
-        lineWidth=3.0,
-        lifeTime=0,
-    )
-
-    # Column shape at B: rear -> middle -> front
-    p.addUserDebugLine(
-        lineFromXYZ=env.hover_B_targets[2].tolist(),
-        lineToXYZ=env.hover_B_targets[1].tolist(),
-        lineColorRGB=[0.0, 0.6, 1.0],
-        lineWidth=3.0,
-        lifeTime=0,
-    )
-
-    p.addUserDebugLine(
-        lineFromXYZ=env.hover_B_targets[1].tolist(),
-        lineToXYZ=env.hover_B_targets[0].tolist(),
-        lineColorRGB=[0.0, 0.6, 1.0],
-        lineWidth=3.0,
-        lifeTime=0,
+    # Triangle shape at B
+    draw_triangle_edges(
+        env.hover_B_targets[0].tolist(),
+        env.hover_B_targets[1].tolist(),
+        env.hover_B_targets[2].tolist(),
+        color=[0.0, 0.6, 1.0],
+        width=3.0,
     )
 
     p.addUserDebugText(
-        text="v0.5: 3 UAV SINGLE-FILE COLUMN FORMATION + LANDING",
-        textPosition=[0.15, -1.05, 1.45],
+        text="v0.6: 3 UAV TRIANGLE FORMATION + LANDING",
+        textPosition=[0.15, -1.15, 1.45],
         textColorRGB=[1.0, 1.0, 1.0],
         textSize=1.1,
         lifeTime=0,
@@ -254,7 +285,7 @@ def draw_reference_path(env):
     )
 
     p.addUserDebugText(
-        text="UAV1 MIDDLE",
+        text="UAV1 REAR-LEFT",
         textPosition=env.hover_A_targets[1].tolist(),
         textColorRGB=[1.0, 1.0, 0.0],
         textSize=0.8,
@@ -262,7 +293,7 @@ def draw_reference_path(env):
     )
 
     p.addUserDebugText(
-        text="UAV2 REAR",
+        text="UAV2 REAR-RIGHT",
         textPosition=env.hover_A_targets[2].tolist(),
         textColorRGB=[1.0, 1.0, 0.0],
         textSize=0.8,
@@ -373,7 +404,7 @@ def eval_playback():
     all_rewards = []
     all_centroid_errors = []
     all_formation_errors = []
-    all_column_spacing_errors = []
+    all_triangle_spacing_errors = []
     all_mean_distances = []
     all_mean_speeds = []
     all_min_pair_dists = []
@@ -435,7 +466,7 @@ def eval_playback():
         all_rewards.append(float(ep_reward))
         all_centroid_errors.append(metric(info, "centroid_error"))
         all_formation_errors.append(metric(info, "formation_error"))
-        all_column_spacing_errors.append(metric(info, "column_spacing_error"))
+        all_triangle_spacing_errors.append(metric(info, "triangle_spacing_error"))
         all_mean_distances.append(metric(info, "mean_dist_to_target"))
         all_mean_speeds.append(metric(info, "mean_speed"))
         all_min_pair_dists.append(metric(info, "min_pair_dist"))
@@ -449,8 +480,9 @@ def eval_playback():
             f"Phase: {info.get('phase_label', '')} | "
             f"CentroidErr: {metric(info, 'centroid_error'):.3f} | "
             f"FormErr: {metric(info, 'formation_error'):.3f} | "
-            f"ColumnErr: {metric(info, 'column_spacing_error'):.3f} | "
+            f"TriErr: {metric(info, 'triangle_spacing_error'):.3f} | "
             f"D01: {metric(info, 'spacing_uav0_uav1'):.3f} | "
+            f"D02: {metric(info, 'spacing_uav0_uav2'):.3f} | "
             f"D12: {metric(info, 'spacing_uav1_uav2'):.3f} | "
             f"TargetDist: {metric(info, 'mean_dist_to_target'):.3f} | "
             f"Speed: {metric(info, 'mean_speed'):.3f} | "
@@ -459,7 +491,7 @@ def eval_playback():
             f"Crashed: {info.get('crashed', False)}"
         )
 
-    print("\n========== v0.5 SINGLE-FILE COLUMN FORMATION EVAL SUMMARY ==========")
+    print("\n========== v0.6 TRIANGLE FORMATION EVAL SUMMARY ==========")
     print(
         f"Success Rate: {successes}/{NUM_EVAL_EPISODES} "
         f"({100.0 * successes / NUM_EVAL_EPISODES:.1f}%)"
@@ -467,7 +499,7 @@ def eval_playback():
     print(f"Mean Reward: {np.mean(all_rewards):.3f}")
     print(f"Mean Centroid Error: {np.mean(all_centroid_errors):.3f}")
     print(f"Mean Formation Error: {np.mean(all_formation_errors):.3f}")
-    print(f"Mean Column Spacing Error: {np.mean(all_column_spacing_errors):.3f}")
+    print(f"Mean Triangle Spacing Error: {np.mean(all_triangle_spacing_errors):.3f}")
     print(f"Mean Distance To Target: {np.mean(all_mean_distances):.3f}")
     print(f"Mean Speed: {np.mean(all_mean_speeds):.3f}")
     print(f"Mean Min Pair Distance: {np.mean(all_min_pair_dists):.3f}")
