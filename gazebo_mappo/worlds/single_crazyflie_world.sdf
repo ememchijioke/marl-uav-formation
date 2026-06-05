@@ -1,0 +1,188 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="single_crazyflie_world">
+
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+
+    <!-- Lighting -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 8 0 0 0</pose>
+      <diffuse>0.95 0.95 0.95 1</diffuse>
+      <specular>0.25 0.25 0.25 1</specular>
+      <direction>-0.4 0.2 -0.9</direction>
+    </light>
+
+    <!-- Indoor-style floor: not too dark, not too bright -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>5 3</size>
+            </plane>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>5 3</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.42 0.42 0.42 1</ambient>
+            <diffuse>0.45 0.45 0.45 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Left side wall -->
+    <model name="left_wall">
+      <static>true</static>
+      <pose>0 1.5 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>5.0 0.05 0.7</size>
+            </box>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>5.0 0.05 0.7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.70 0.42 0.14 1</ambient>
+            <diffuse>0.75 0.45 0.16 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Right side wall -->
+    <model name="right_wall">
+      <static>true</static>
+      <pose>0 -1.5 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>5.0 0.05 0.7</size>
+            </box>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>5.0 0.05 0.7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.70 0.42 0.14 1</ambient>
+            <diffuse>0.75 0.45 0.16 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Start marker: shows where the Crazyflie begins -->
+    <model name="start_marker">
+      <static>true</static>
+      <pose>-2.1 0 0.01 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.12</radius>
+              <length>0.02</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.1 1.0 0.25 1</ambient>
+            <diffuse>0.1 1.0 0.25 1</diffuse>
+            <specular>0.2 0.2 0.2 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Goal marker -->
+    <model name="goal_marker">
+      <static>true</static>
+      <pose>2.1 0 0.03 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.11</radius>
+              <length>0.06</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.0 0.85 1.0 1</ambient>
+            <diffuse>0.0 0.85 1.0 1</diffuse>
+            <specular>0.3 0.3 0.3 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Obstacle placeholder for later avoidance -->
+    <model name="obstacle_1">
+      <static>true</static>
+      <pose>-0.2 0.45 0.25 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <cylinder>
+              <radius>0.10</radius>
+              <length>0.50</length>
+            </cylinder>
+          </geometry>
+        </collision>
+
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.10</radius>
+              <length>0.50</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>1.0 0.45 0.0 1</ambient>
+            <diffuse>1.0 0.45 0.0 1</diffuse>
+            <specular>0.25 0.25 0.25 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Bitcraze Crazyflie model, unchanged -->
+    <include>
+      <uri>model://crazyflie</uri>
+      <name>cf1</name>
+      <pose>-2.1 0 0.2 0 0 0</pose>
+    </include>
+
+  </world>
+</sdf>
