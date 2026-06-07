@@ -23,8 +23,6 @@ class SingleCrazyflieGymEnv(gym.Env):
 
     Action:
         [vx, vy, vz]
-
-    The action is a velocity command sent to the Crazyflie.
     """
 
     def __init__(self):
@@ -80,10 +78,8 @@ class SingleCrazyflieGymEnv(gym.Env):
 
     def reset_world(self):
         """
-        Reset the Gazebo world.
-
-        This is the simple reset method for now.
-        It returns the Crazyflie to the initial world state.
+        Reset the Gazebo world to the initial state.
+        Gazebo must already be running.
         """
 
         self.stop_drone()
@@ -149,7 +145,7 @@ class SingleCrazyflieGymEnv(gym.Env):
 
         return observation
 
-    def compute_distance(self, observation):
+    def calculate_distance(self, observation):
         error_x = observation[3]
         error_y = observation[4]
         error_z = observation[5]
@@ -157,8 +153,8 @@ class SingleCrazyflieGymEnv(gym.Env):
         distance = float(np.sqrt(error_x**2 + error_y**2 + error_z**2))
         return distance
 
-    def compute_reward(self, observation):
-        distance = self.compute_distance(observation)
+    def calculate_reward(self, observation):
+        distance = self.calculate_distance(observation)
 
         reward = -distance
 
@@ -196,7 +192,7 @@ class SingleCrazyflieGymEnv(gym.Env):
         if observation is None:
             observation = np.zeros(6, dtype=np.float32)
 
-        distance = self.compute_distance(observation)
+        distance = self.calculate_distance(observation)
         self.last_distance = distance
 
         info = {
@@ -229,16 +225,20 @@ class SingleCrazyflieGymEnv(gym.Env):
             info = {"error": "Could not read odometry"}
             return observation, reward, terminated, truncated, info
 
-        reward, distance = self.compute_reward(observation)
+        reward, distance = self.calculate_reward(observation)
 
         self.current_step += 1
 
-        reached_goal = distance < 0.25
-        out_of_bounds = abs(observation[0]) > 4.0 or abs(observation[1]) > 3.0 or observation[2] > 2.5
-        too_low = observation[2] < -0.20
+        reached_goal = bool(distance < 0.25)
+        out_of_bounds = (
+            abs(observation[0]) > 4.0
+            or abs(observation[1]) > 3.0
+            or observation[2] > 2.5
+        )
+        too_low = bool(observation[2] < -0.20)
 
-        terminated = reached_goal or out_of_bounds or too_low
-        truncated = self.current_step >= self.max_steps
+        terminated = bool(reached_goal or out_of_bounds or too_low)
+        truncated = bool(self.current_step >= self.max_steps)
 
         if terminated or truncated:
             self.stop_drone()
@@ -261,11 +261,6 @@ class SingleCrazyflieGymEnv(gym.Env):
 
 
 def test_environment():
-    """
-    Simple test before training.
-    This uses a basic controller, not RL.
-    """
-
     env = SingleCrazyflieGymEnv()
 
     obs, info = env.reset()
