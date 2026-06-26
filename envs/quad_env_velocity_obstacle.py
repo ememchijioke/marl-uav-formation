@@ -9,7 +9,14 @@ from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
 class MultiUAVVelocityObstacleFormationEnv(gym.Env):
     """
-    v0.9.1 obstacle-curriculum 3-UAV environment.
+    v0.9.2 formation-preserving obstacle-aware 3-UAV environment.
+
+    Key change from v0.9.1:
+        - Obstacle avoidance is now mainly formation-level.
+        - The formation centroid is guided around obstacles.
+        - Each UAV is pulled toward its assigned triangle offset around the shared detour center.
+        - Individual safety filter is kept only as emergency protection.
+        - Formation/spacing errors are penalized more strongly near obstacles.
 
     Mission:
         Phase 0: Takeoff to target altitude
@@ -20,7 +27,7 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
 
     Control:
         v_final = v_reference + learned_velocity_correction
-        v_safe  = obstacle/inter-UAV safety filtered velocity
+        v_safe  = emergency safety filtered velocity
 
     Actor observation per UAV = 42:
         relative_assigned_target(3)
@@ -60,43 +67,49 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         start_x=0.0,
         goal_x=7.0,
         triangle_side=1.20,
-        reference_max_vx=0.30,
-        reference_max_vy=0.22,
+        reference_max_vx=0.28,
+        reference_max_vy=0.24,
         reference_max_vz=0.14,
-        correction_scale=0.06,
+        correction_scale=0.07,
         velocity_lookahead=0.30,
         kp_center=0.38,
         kp_form=0.72,
         kp_alt=0.45,
-        goal_bonus=1800.0,
+        goal_bonus=2000.0,
         alive_reward=0.04,
-        phase_bonus=250.0,
-        progress_weight=45.0,
+        phase_bonus=260.0,
+        progress_weight=48.0,
         center_weight=3.5,
         assigned_target_weight=1.8,
-        formation_weight=34.0,
-        spacing_weight=20.0,
+        formation_weight=36.0,
+        spacing_weight=24.0,
         velocity_weight=0.28,
         command_weight=0.10,
         correction_weight=0.14,
         smoothness_weight=0.28,
         attitude_weight=0.90,
-        collision_penalty=3500.0,
-        crash_penalty=4000.0,
+        collision_penalty=3600.0,
+        crash_penalty=4200.0,
         boundary_penalty=1500.0,
-        obstacle_collision_penalty=3500.0,
-        obstacle_near_penalty_weight=18.0,
-        obstacle_clearance_bonus=10.0,
-        formation_near_obstacle_weight=10.0,
+        obstacle_collision_penalty=4200.0,
+        obstacle_near_penalty_weight=20.0,
+        obstacle_clearance_bonus=12.0,
+        formation_near_obstacle_weight=34.0,
+        spacing_near_obstacle_weight=28.0,
         min_separation=0.30,
-        min_obstacle_clearance=0.30,
-        obstacle_influence_radius=1.10,
-        obstacle_repulsion_gain=0.28,
-        safety_filter_gain=0.28,
+        min_obstacle_clearance=0.32,
+        obstacle_influence_radius=1.20,
+        obstacle_repulsion_gain=0.20,
+        safety_filter_gain=0.18,
+        emergency_clearance=0.12,
+        centroid_bypass_gain=0.75,
+        centroid_bypass_window=1.45,
+        max_shared_avoidance_speed=0.30,
+        formation_lock_gain=1.15,
         neighbor_dropout_prob=0.02,
         use_neighbor_dropout=True,
         use_obstacles=True,
-        obstacle_layout="easy_offset",
+        obstacle_layout="single_center",
     ):
         super().__init__()
 
@@ -153,12 +166,19 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         self.obstacle_near_penalty_weight = float(obstacle_near_penalty_weight)
         self.obstacle_clearance_bonus = float(obstacle_clearance_bonus)
         self.formation_near_obstacle_weight = float(formation_near_obstacle_weight)
+        self.spacing_near_obstacle_weight = float(spacing_near_obstacle_weight)
 
         self.min_separation = float(min_separation)
         self.min_obstacle_clearance = float(min_obstacle_clearance)
         self.obstacle_influence_radius = float(obstacle_influence_radius)
         self.obstacle_repulsion_gain = float(obstacle_repulsion_gain)
         self.safety_filter_gain = float(safety_filter_gain)
+        self.emergency_clearance = float(emergency_clearance)
+
+        self.centroid_bypass_gain = float(centroid_bypass_gain)
+        self.centroid_bypass_window = float(centroid_bypass_window)
+        self.max_shared_avoidance_speed = float(max_shared_avoidance_speed)
+        self.formation_lock_gain = float(formation_lock_gain)
 
         self.neighbor_dropout_prob = float(neighbor_dropout_prob)
         self.use_neighbor_dropout = bool(use_neighbor_dropout)
@@ -291,6 +311,11 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
             dtype=np.float32,
         )
 
+        self.episode_obstacle_collision_count = 0
+        self.episode_near_miss_count = 0
+        self.max_spacing_during_danger = 0.0
+        self.max_shape_error_during_danger = 0.0
+
     def _make_obstacle_layout(self, layout):
         if not self.use_obstacles:
             return []
@@ -401,6 +426,11 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         self.prev_reference_velocity = np.zeros((self.num_agents, 3), dtype=np.float32)
         self.prev_final_velocity = np.zeros((self.num_agents, 3), dtype=np.float32)
 
+        self.episode_obstacle_collision_count = 0
+        self.episode_near_miss_count = 0
+        self.max_spacing_during_danger = 0.0
+        self.max_shape_error_during_danger = 0.0
+
         sim_obs = self._safe_reset(seed=seed, options=options)
         sim_obs = self._to_numpy_obs(sim_obs)
 
@@ -451,7 +481,7 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         correction_velocity = phase_correction_scale * learned_action
 
         final_velocity = reference_velocity + correction_velocity
-        final_velocity = self._apply_safety_filter(current_sim_obs, final_velocity)
+        final_velocity = self._apply_emergency_safety_filter(current_sim_obs, final_velocity)
 
         max_final_velocity = self.reference_max_vel + phase_correction_scale
 
@@ -595,6 +625,50 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
 
         return distances
 
+    def _bypass_target_y(self, centroid):
+        if not self.use_obstacles or len(self.obstacles) == 0:
+            return 0.0
+
+        if self.obstacle_layout == "easy_offset":
+            return -1.00
+
+        if self.obstacle_layout == "side_column":
+            return -0.95
+
+        if self.obstacle_layout == "single_center":
+            return 1.25
+
+        if self.obstacle_layout == "offset_gate":
+            return 1.75
+
+        nearest_center = min(
+            self.obstacles,
+            key=lambda obs: float(np.linalg.norm(obs["center"][0:2] - centroid[0:2])),
+        )["center"]
+
+        if nearest_center[1] >= centroid[1]:
+            return -1.10
+
+        return 1.10
+
+    def _obstacle_corridor_active(self, centroid):
+        if not self.use_obstacles or len(self.obstacles) == 0:
+            return False
+
+        obs_xs = [float(obs["center"][0]) for obs in self.obstacles]
+        min_x = min(obs_xs) - self.centroid_bypass_window
+        max_x = max(obs_xs) + self.centroid_bypass_window
+
+        return bool(min_x <= float(centroid[0]) <= max_x and self.phase == 2)
+
+    def _effective_target_center(self, base_target_center, centroid):
+        effective = base_target_center.copy()
+
+        if self._obstacle_corridor_active(centroid):
+            effective[1] = self._bypass_target_y(centroid)
+
+        return effective.astype(np.float32)
+
     def _nearest_obstacle_features(self, pos):
         if not self.use_obstacles or len(self.obstacles) == 0:
             return (
@@ -645,9 +719,11 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
             return {
                 "min_obstacle_margin": 999.0,
                 "mean_obstacle_margin": 999.0,
+                "centroid_obstacle_margin": 999.0,
                 "obstacle_collision_count": 0,
                 "obstacle_near_miss_count": 0,
                 "obstacle_danger_count": 0,
+                "formation_obstacle_danger": False,
             }
 
         margins = []
@@ -680,19 +756,41 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
 
             margins.append(nearest_margin)
 
+        centroid = np.mean(positions, axis=0)
+        centroid_margin = np.inf
+
+        for obs in self.obstacles:
+            center = obs["center"]
+            radius = float(obs["radius"])
+            dist = float(np.linalg.norm(centroid[0:2] - center[0:2]))
+            centroid_margin = min(centroid_margin, dist - radius)
+
+        formation_obstacle_danger = bool(
+            centroid_margin < self.obstacle_influence_radius + 0.65
+            or danger_count > 0
+            or self._obstacle_corridor_active(centroid)
+        )
+
         return {
             "min_obstacle_margin": float(np.min(margins)),
             "mean_obstacle_margin": float(np.mean(margins)),
+            "centroid_obstacle_margin": float(centroid_margin),
             "obstacle_collision_count": int(collision_count),
             "obstacle_near_miss_count": int(near_miss_count),
             "obstacle_danger_count": int(danger_count),
+            "formation_obstacle_danger": bool(formation_obstacle_danger),
         }
 
-    def _formation_centroid_obstacle_repulsion(self, centroid):
+    def _formation_centroid_obstacle_avoidance(self, centroid):
         if not self.use_obstacles or len(self.obstacles) == 0:
             return np.zeros(3, dtype=np.float32)
 
-        repulsion = np.zeros(3, dtype=np.float32)
+        avoidance = np.zeros(3, dtype=np.float32)
+
+        if self._obstacle_corridor_active(centroid):
+            desired_y = self._bypass_target_y(centroid)
+            lateral_error = desired_y - float(centroid[1])
+            avoidance[1] += self.centroid_bypass_gain * lateral_error
 
         for obs in self.obstacles:
             center = obs["center"]
@@ -711,11 +809,16 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
                 strength = (self.obstacle_influence_radius - margin) / max(self.obstacle_influence_radius, 1e-6)
                 strength = float(np.clip(strength, 0.0, 1.5))
 
-                repulsion[0:2] += self.obstacle_repulsion_gain * strength * direction
+                avoidance[0:2] += self.obstacle_repulsion_gain * strength * direction
 
-        return repulsion.astype(np.float32)
+        speed_xy = float(np.linalg.norm(avoidance[0:2]))
 
-    def _apply_safety_filter(self, sim_obs, final_velocity):
+        if speed_xy > self.max_shared_avoidance_speed:
+            avoidance[0:2] = avoidance[0:2] / speed_xy * self.max_shared_avoidance_speed
+
+        return avoidance.astype(np.float32)
+
+    def _apply_emergency_safety_filter(self, sim_obs, final_velocity):
         if not self.use_obstacles or len(self.obstacles) == 0:
             return final_velocity.astype(np.float32)
 
@@ -733,13 +836,13 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
                 dist_xy = float(np.linalg.norm(vec_xy))
                 margin = dist_xy - radius
 
-                if margin < self.min_obstacle_clearance:
+                if margin < self.emergency_clearance:
                     if dist_xy < 1e-6:
                         direction = np.array([0.0, 1.0], dtype=np.float32)
                     else:
                         direction = vec_xy / dist_xy
 
-                    strength = (self.min_obstacle_clearance - margin) / max(self.min_obstacle_clearance, 1e-6)
+                    strength = (self.emergency_clearance - margin) / max(self.emergency_clearance, 1e-6)
                     strength = float(np.clip(strength, 0.0, 2.0))
 
                     safe_velocity[i, 0:2] += self.safety_filter_gain * strength * direction
@@ -749,24 +852,37 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
     def _compute_reference_velocity(self, sim_obs):
         positions = sim_obs[:, 0:3]
 
-        target_center, formation_offsets = self._phase_target_and_offsets()
+        base_target_center, formation_offsets = self._phase_target_and_offsets()
         centroid = np.mean(positions, axis=0)
 
-        center_error = target_center - centroid
+        effective_target_center = self._effective_target_center(base_target_center, centroid)
+
+        center_error = effective_target_center - centroid
 
         center_velocity_cmd = self.kp_center * center_error
         center_velocity_cmd[2] = self.kp_alt * center_error[2]
 
-        if self.phase == 2:
-            center_velocity_cmd += self._formation_centroid_obstacle_repulsion(centroid)
+        shared_avoidance = np.zeros(3, dtype=np.float32)
 
-        desired_positions = target_center[None, :] + formation_offsets
+        if self.phase == 2:
+            shared_avoidance = self._formation_centroid_obstacle_avoidance(centroid)
+            center_velocity_cmd += shared_avoidance
+
+        obstacle_metrics = self._compute_obstacle_metrics(positions)
+        danger = bool(obstacle_metrics["formation_obstacle_danger"])
+
+        effective_kp_form = self.kp_form
+
+        if danger:
+            effective_kp_form = self.kp_form * (1.0 + self.formation_lock_gain)
+
+        desired_positions = effective_target_center[None, :] + formation_offsets
         formation_tracking_error = desired_positions - positions
 
         reference_velocity = np.zeros((self.num_agents, 3), dtype=np.float32)
 
         for i in range(self.num_agents):
-            form_cmd = self.kp_form * formation_tracking_error[i]
+            form_cmd = effective_kp_form * formation_tracking_error[i]
             reference_velocity[i] = center_velocity_cmd + form_cmd
 
         if self.phase == 1:
@@ -791,9 +907,11 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
     def _build_obs(self, sim_obs, reference_velocity, formation_tracking_error):
         positions = sim_obs[:, 0:3]
         velocities = sim_obs[:, 10:13]
+        centroid = np.mean(positions, axis=0)
 
-        target_center, formation_offsets = self._phase_target_and_offsets()
-        desired_positions = target_center[None, :] + formation_offsets
+        base_target_center, formation_offsets = self._phase_target_and_offsets()
+        effective_target_center = self._effective_target_center(base_target_center, centroid)
+        desired_positions = effective_target_center[None, :] + formation_offsets
 
         spacing_error = np.array(
             [self._compute_spacing_error(positions, formation_offsets)],
@@ -812,7 +930,7 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
             rel_target = desired_positions[i] - own_pos
 
             altitude_error = np.array(
-                [target_center[2] - own_pos[2]],
+                [effective_target_center[2] - own_pos[2]],
                 dtype=np.float32,
             )
 
@@ -924,8 +1042,16 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         return np.concatenate(obs_parts, axis=0).astype(np.float32)
 
     def _compute_formation_error(self, positions, formation_offsets):
-        target_center, _ = self._phase_target_and_offsets()
-        desired_positions = target_center[None, :] + formation_offsets
+        """
+        v0.9.2 meaning:
+            formation_error is now shape/cohesion error around the current centroid,
+            not distance-to-final-target.
+
+        This is important because obstacle avoidance should preserve geometry
+        while the centroid moves around obstacles.
+        """
+        centroid = np.mean(positions, axis=0)
+        desired_positions = centroid[None, :] + formation_offsets
         per_agent_error = np.linalg.norm(positions - desired_positions, axis=1)
         return float(np.mean(per_agent_error)), per_agent_error
 
@@ -967,11 +1093,13 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         velocities = sim_obs[:, 10:13]
         rpys = sim_obs[:, 7:10]
 
-        target_center, formation_offsets = self._phase_target_and_offsets()
-        desired_positions = target_center[None, :] + formation_offsets
-
+        base_target_center, formation_offsets = self._phase_target_and_offsets()
         centroid = np.mean(positions, axis=0)
-        center_dist = float(np.linalg.norm(target_center - centroid))
+        effective_target_center = self._effective_target_center(base_target_center, centroid)
+        desired_positions = effective_target_center[None, :] + formation_offsets
+
+        center_dist = float(np.linalg.norm(base_target_center - centroid))
+        path_center_dist = float(np.linalg.norm(effective_target_center - centroid))
 
         if self.prev_center_dist is None:
             raw_progress = 0.0
@@ -998,6 +1126,15 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         obstacle_danger_count = int(obstacle_metrics["obstacle_danger_count"])
         min_obstacle_margin = float(obstacle_metrics["min_obstacle_margin"])
         mean_obstacle_margin = float(obstacle_metrics["mean_obstacle_margin"])
+        centroid_obstacle_margin = float(obstacle_metrics["centroid_obstacle_margin"])
+        formation_obstacle_danger = bool(obstacle_metrics["formation_obstacle_danger"])
+
+        self.episode_obstacle_collision_count += obstacle_collision_count
+        self.episode_near_miss_count += obstacle_near_miss_count
+
+        if formation_obstacle_danger:
+            self.max_spacing_during_danger = max(self.max_spacing_during_danger, spacing_error)
+            self.max_shape_error_during_danger = max(self.max_shape_error_during_danger, formation_error)
 
         mean_speed = float(np.mean(np.linalg.norm(velocities, axis=1)))
         max_speed = float(np.max(np.linalg.norm(velocities, axis=1)))
@@ -1029,8 +1166,8 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         )
 
         formation_safe = bool(
-            formation_error < 0.42
-            and spacing_error < 0.34
+            formation_error < 0.32
+            and spacing_error < 0.26
             and collision_count == 0
             and obstacle_collision_count == 0
             and not out_of_bounds
@@ -1039,6 +1176,7 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
 
         obstacle_clear = bool(
             obstacle_collision_count == 0
+            and self.episode_obstacle_collision_count == 0
             and min_obstacle_margin > self.min_obstacle_clearance
         )
 
@@ -1071,22 +1209,29 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
                 reward -= self.obstacle_near_penalty_weight * proximity_penalty
 
             if obstacle_near_miss_count > 0:
-                reward -= 35.0 * obstacle_near_miss_count
+                reward -= 45.0 * obstacle_near_miss_count
 
             if obstacle_collision_count > 0:
                 reward -= self.obstacle_collision_penalty * obstacle_collision_count
 
-            if obstacle_danger_count > 0:
+            if formation_obstacle_danger:
                 reward -= self.formation_near_obstacle_weight * formation_error
+                reward -= self.spacing_near_obstacle_weight * spacing_error
+
+                if formation_error < 0.22 and spacing_error < 0.18 and collision_count == 0:
+                    reward += 20.0
+
+                if formation_error < 0.15 and spacing_error < 0.12 and collision_count == 0:
+                    reward += 35.0
 
             if obstacle_clear and self.phase in [2, 3, 4]:
                 reward += self.obstacle_clearance_bonus
 
-        if formation_error < 0.28 and spacing_error < 0.24 and collision_count == 0:
-            reward += 8.0
+        if formation_error < 0.24 and spacing_error < 0.20 and collision_count == 0:
+            reward += 10.0
 
-        if formation_error < 0.18 and spacing_error < 0.15 and collision_count == 0:
-            reward += 18.0
+        if formation_error < 0.16 and spacing_error < 0.13 and collision_count == 0:
+            reward += 24.0
 
         if center_dist < 0.75 and formation_safe:
             reward += 20.0
@@ -1121,6 +1266,7 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
             "phase": int(self.phase),
             "phase_name": self.phase_names[self.phase],
             "center_error": center_dist,
+            "path_center_error": path_center_dist,
             "mean_dist_to_target": mean_assigned_target_dist,
             "max_dist_to_target": max_assigned_target_dist,
             "formation_error": float(formation_error),
@@ -1137,10 +1283,16 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
             "collision_count": int(collision_count),
             "min_pair_dist": float(min_pair_dist),
             "obstacle_collision_count": int(obstacle_collision_count),
+            "episode_obstacle_collision_count": int(self.episode_obstacle_collision_count),
             "obstacle_near_miss_count": int(obstacle_near_miss_count),
+            "episode_near_miss_count": int(self.episode_near_miss_count),
             "obstacle_danger_count": int(obstacle_danger_count),
+            "formation_obstacle_danger": bool(formation_obstacle_danger),
             "min_obstacle_margin": float(min_obstacle_margin),
             "mean_obstacle_margin": float(mean_obstacle_margin),
+            "centroid_obstacle_margin": float(centroid_obstacle_margin),
+            "max_spacing_during_danger": float(self.max_spacing_during_danger),
+            "max_shape_error_during_danger": float(self.max_shape_error_during_danger),
             "obstacle_clear": bool(obstacle_clear),
             "crashed": crashed,
             "out_of_bounds": out_of_bounds,
@@ -1151,9 +1303,12 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
             "centroid_x": float(centroid[0]),
             "centroid_y": float(centroid[1]),
             "centroid_z": float(centroid[2]),
-            "target_center_x": float(target_center[0]),
-            "target_center_y": float(target_center[1]),
-            "target_center_z": float(target_center[2]),
+            "target_center_x": float(base_target_center[0]),
+            "target_center_y": float(base_target_center[1]),
+            "target_center_z": float(base_target_center[2]),
+            "effective_target_center_x": float(effective_target_center[0]),
+            "effective_target_center_y": float(effective_target_center[1]),
+            "effective_target_center_z": float(effective_target_center[2]),
             "uav0_x": float(positions[0, 0]),
             "uav1_x": float(positions[1, 0]),
             "uav2_x": float(positions[2, 0]),
@@ -1178,6 +1333,7 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         completed = False
 
         center_error = float(info.get("center_error", 999.0))
+        path_center_error = float(info.get("path_center_error", 999.0))
         formation_error = float(info.get("formation_error", 999.0))
         spacing_error = float(info.get("spacing_error", 999.0))
         collision_count = int(info.get("collision_count", 99))
@@ -1185,8 +1341,8 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         crashed = bool(info.get("crashed", False))
 
         stable_formation = (
-            formation_error < 0.42
-            and spacing_error < 0.34
+            formation_error < 0.32
+            and spacing_error < 0.26
             and collision_count == 0
             and obstacle_collision_count == 0
             and not crashed
@@ -1208,6 +1364,7 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         elif phase == 2:
             completed = bool(
                 centroid[0] >= self.goal_x - 0.35
+                and center_error < 0.65
                 and stable_formation
                 and bool(info.get("obstacle_clear", False))
             )
@@ -1215,6 +1372,7 @@ class MultiUAVVelocityObstacleFormationEnv(gym.Env):
         elif phase == 3:
             completed = bool(
                 center_error < 0.50
+                and path_center_error < 0.55
                 and stable_formation
                 and mean_speed < 0.50
             )
