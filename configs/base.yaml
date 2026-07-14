@@ -1,0 +1,28 @@
+project:
+  name: thesis-v2
+  method: non_apf
+
+environment:
+  num_uavs: 3
+  scenario: formation_switching
+  max_steps: 1500
+  gui: false
+
+formation:
+  preferred: triangle
+  alternative: line
+  spacing: 0.6
+  transition_steps: 100
+
+training:
+  episodes: 3000
+  learning_rate: 0.0003
+  gamma: 0.99
+  gae_lambda: 0.95
+
+evaluation:
+  episodes: 10
+  deterministic: true
+
+obstacle_avoidance:
+  use_apf: false

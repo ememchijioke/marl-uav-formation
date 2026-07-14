@@ -21,7 +21,8 @@ parser.add_argument("--sleep", type=float, default=0.02)
 parser.add_argument(
     "--model-path",
     type=str,
-    default="checkpoints/v0_9_2_formation_preserving_obstacle_3uav/shared_velocity_policy.pth",
+    default="checkpoints/v0_9_1_obstacle_curriculum_velocity_3uav/shared_velocity_policy.pth",
+    help="Path to the trained obstacle-aware shared velocity policy checkpoint.",
 )
 
 parser.add_argument(
@@ -31,13 +32,11 @@ parser.add_argument(
     choices=["none", "easy_offset", "side_column", "single_center", "offset_gate"],
 )
 
-parser.add_argument(
-    "--camera-mode",
-    type=str,
-    default="chase_back",
-    choices=["chase_back", "birdseye", "side", "front"],
-    help="Camera view for PyBullet human rendering.",
-)
+parser.add_argument("--save-video", action="store_true")
+parser.add_argument("--video-path", type=str, default="eval_obstacle_curriculum_velocity_3uav.mp4")
+parser.add_argument("--width", type=int, default=1280)
+parser.add_argument("--height", type=int, default=720)
+parser.add_argument("--fps", type=int, default=20)
 
 args = parser.parse_args()
 
@@ -87,10 +86,10 @@ def make_env(render_mode):
         start_x=0.0,
         goal_x=7.0,
         triangle_side=1.20,
-        reference_max_vx=0.24,
-        reference_max_vy=0.26,
+        reference_max_vx=0.25,
+        reference_max_vy=0.24,
         reference_max_vz=0.14,
-        correction_scale=0.075,
+        correction_scale=0.070,
         velocity_lookahead=0.30,
         kp_center=0.38,
         kp_form=0.72,
@@ -98,13 +97,8 @@ def make_env(render_mode):
         min_separation=0.30,
         min_obstacle_clearance=0.32,
         obstacle_influence_radius=1.20,
-        obstacle_repulsion_gain=0.20,
-        safety_filter_gain=0.18,
-        emergency_clearance=0.12,
-        centroid_bypass_gain=0.75,
-        centroid_bypass_window=1.45,
-        max_shared_avoidance_speed=0.30,
-        formation_lock_gain=1.15,
+        obstacle_repulsion_gain=0.30,
+        safety_filter_gain=0.30,
         neighbor_dropout_prob=0.0,
         use_neighbor_dropout=False,
         use_obstacles=use_obstacles,
@@ -132,64 +126,175 @@ def reset_camera(env):
         positions = get_drone_positions(env)
         centroid = np.mean(positions, axis=0)
 
-        cx = float(centroid[0])
-        cy = float(centroid[1])
-        cz = float(centroid[2])
-
-        if args.camera_mode == "chase_back":
-            # True follow camera from behind the UAVs.
-            # Mission direction is +X, so camera sits behind at lower X
-            # and looks forward toward the formation.
-            target = [
-                cx + 0.8,          # look slightly ahead of formation
-                cy,
-                max(cz, 0.9),
-            ]
-
-            p.resetDebugVisualizerCamera(
-                cameraDistance=3.8,
-                cameraYaw=-90,       # behind along mission direction
-                cameraPitch=-28,    # elevated but not top-down
-                cameraTargetPosition=target,
-            )
-
-        elif args.camera_mode == "birdseye":
-            p.resetDebugVisualizerCamera(
-                cameraDistance=8.0,
-                cameraYaw=0,
-                cameraPitch=-89,
-                cameraTargetPosition=[cx, cy, max(cz, 0.9)],
-            )
-
-        elif args.camera_mode == "side":
-            p.resetDebugVisualizerCamera(
-                cameraDistance=5.5,
-                cameraYaw=0,
-                cameraPitch=-32,
-                cameraTargetPosition=[cx, cy, max(cz, 0.9)],
-            )
-
-        elif args.camera_mode == "front":
-            p.resetDebugVisualizerCamera(
-                cameraDistance=5.2,
-                cameraYaw=-90,
-                cameraPitch=-28,
-                cameraTargetPosition=[cx - 0.8, cy, max(cz, 0.9)],
-            )
+        p.resetDebugVisualizerCamera(
+            cameraDistance=5.0,
+            cameraYaw=45,
+            cameraPitch=-25,
+            cameraTargetPosition=[
+                float(centroid[0]),
+                float(centroid[1]),
+                float(max(centroid[2], 0.8)),
+            ],
+        )
 
     except Exception:
         pass
 
 
-def draw_debug_guides(env):
+def draw_demo_guides(env):
     if args.render != "human":
         return
+
+    try:
+        import pybullet as p
+
+        start_center = env.start_center
+        goal_center = env.goal_center
+        landing_center = env.landing_center
+        offsets = env.triangle_offsets
+
+        start_targets = start_center[None, :] + offsets
+        goal_targets = goal_center[None, :] + offsets
+        landing_targets = landing_center[None, :] + offsets
+
+        p.addUserDebugLine(
+            start_center.tolist(),
+            goal_center.tolist(),
+            [1.0, 1.0, 1.0],
+            lineWidth=3.0,
+            lifeTime=0,
+        )
+
+        p.addUserDebugLine(
+            goal_center.tolist(),
+            landing_center.tolist(),
+            [1.0, 0.0, 0.0],
+            lineWidth=3.0,
+            lifeTime=0,
+        )
+
+        def draw_triangle(points, color):
+            p.addUserDebugLine(points[0].tolist(), points[1].tolist(), color, 2.0, 0)
+            p.addUserDebugLine(points[0].tolist(), points[2].tolist(), color, 2.0, 0)
+            p.addUserDebugLine(points[1].tolist(), points[2].tolist(), color, 2.0, 0)
+
+        draw_triangle(start_targets, [0.0, 0.7, 1.0])
+        draw_triangle(goal_targets, [0.0, 1.0, 0.4])
+        draw_triangle(landing_targets, [1.0, 0.2, 0.2])
+
+        if env.use_obstacles and len(env.obstacles) > 0:
+            for obs in env.obstacles:
+                center = obs["center"]
+                influence = float(env.obstacle_influence_radius)
+
+                p.addUserDebugText(
+                    "OBSTACLE",
+                    [float(center[0]), float(center[1]), 1.75],
+                    [1.0, 0.25, 0.1],
+                    textSize=1.1,
+                    lifeTime=0,
+                )
+
+                circle_pts = []
+
+                for k in range(48):
+                    theta = 2.0 * np.pi * k / 48
+                    x = center[0] + influence * np.cos(theta)
+                    y = center[1] + influence * np.sin(theta)
+                    z = 0.04
+                    circle_pts.append([float(x), float(y), float(z)])
+
+                for k in range(48):
+                    p.addUserDebugLine(
+                        circle_pts[k],
+                        circle_pts[(k + 1) % 48],
+                        [1.0, 0.6, 0.0],
+                        lineWidth=1.0,
+                        lifeTime=0,
+                    )
+
+        p.addUserDebugText(
+            "v0.9.1: OBSTACLE-CURRICULUM TRIANGLE POLICY",
+            [0.0, -1.8, 1.75],
+            [1.0, 1.0, 1.0],
+            textSize=1.1,
+            lifeTime=0,
+        )
+
+    except Exception:
+        pass
+
+
+def capture_frame(env):
+    import pybullet as p
+    import cv2
+
+    positions = get_drone_positions(env)
+    centroid = np.mean(positions, axis=0)
+
+    view_matrix = p.computeViewMatrixFromYawPitchRoll(
+        cameraTargetPosition=[
+            float(centroid[0]),
+            float(centroid[1]),
+            float(max(centroid[2], 0.8)),
+        ],
+        distance=5.0,
+        yaw=45,
+        pitch=-25,
+        roll=0,
+        upAxisIndex=2,
+    )
+
+    proj_matrix = p.computeProjectionMatrixFOV(
+        fov=55.0,
+        aspect=args.width / args.height,
+        nearVal=0.1,
+        farVal=100.0,
+    )
+
+    _, _, px, _, _ = p.getCameraImage(
+        width=args.width,
+        height=args.height,
+        viewMatrix=view_matrix,
+        projectionMatrix=proj_matrix,
+        renderer=p.ER_BULLET_HARDWARE_OPENGL,
+    )
+
+    frame = np.asarray(px, dtype=np.uint8)[:, :, :3]
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+    return frame
+
+
+def save_video(frames, path):
+    if len(frames) == 0:
+        print("[WARN] No frames captured. Video not saved.")
+        return
+
+    import cv2
+
+    out = cv2.VideoWriter(
+        path,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        args.fps,
+        (args.width, args.height),
+    )
+
+    for frame in frames:
+        out.write(frame)
+
+    out.release()
+
+    print(f"\nSaved video: {path}")
+    print(f"Frames: {len(frames)}")
+    print(f"Approx duration: {len(frames) / args.fps:.2f} seconds")
+
 
 def main():
     if not os.path.exists(args.model_path):
         raise FileNotFoundError(
             f"Model not found: {args.model_path}\n"
-            "Train v0.9.2 first or pass --model-path."
+            "Check your checkpoint path or train the obstacle-curriculum model first."
         )
 
     env = make_env(args.render)
@@ -204,13 +309,13 @@ def main():
     print(f"Using device: {device}")
     print(f"Model path: {args.model_path}")
     print(f"Render mode: {args.render}")
-    print(f"Camera mode: {args.camera_mode}")
     print(f"Obstacle layout: {args.obstacle_layout}")
     print(f"Number of agents: {n_agents}")
     print(f"Observation dim per agent: {obs_dim}")
     print(f"Action dim per agent: {act_dim}")
     print("Action meaning: learned velocity correction [rx, ry, rz]")
-    print("Mission: v0.9.2 formation-preserving obstacle avoidance")
+    print("Mission: takeoff -> hover -> obstacle-aware triangle flight -> goal hover -> landing")
+    print("Distance: start x=0.0, goal x=7.0")
 
     policy = SharedVelocityPolicyNet(obs_dim, act_dim).to(device)
     policy.load_state_dict(torch.load(args.model_path, map_location=device))
@@ -230,8 +335,8 @@ def main():
     obstacle_collisions = []
     obstacle_near_misses = []
     obstacle_clears = []
-    max_spacing_during_danger = []
-    max_shape_error_during_danger = []
+
+    all_frames = []
 
     for ep in range(1, args.episodes + 1):
         flat_obs, _ = env.reset()
@@ -242,15 +347,23 @@ def main():
 
         if args.render == "human":
             reset_camera(env)
+            draw_demo_guides(env)
 
         print(f"\n=== Evaluation Episode {ep} ===")
+
+        episode_frames = []
 
         for step in range(1, args.max_steps + 1):
             actions = []
 
             for i in range(n_agents):
                 obs_i = obs_split[i]
-                obs_t = torch.tensor(obs_i, dtype=torch.float32, device=device).unsqueeze(0)
+
+                obs_t = torch.tensor(
+                    obs_i,
+                    dtype=torch.float32,
+                    device=device,
+                ).unsqueeze(0)
 
                 with torch.no_grad():
                     action = policy(obs_t)
@@ -270,6 +383,14 @@ def main():
 
             if args.render == "human":
                 reset_camera(env)
+
+                if args.save_video:
+                    try:
+                        frame = capture_frame(env)
+                        episode_frames.append(frame)
+                    except Exception as e:
+                        print(f"[WARN] Frame capture failed: {e}")
+
                 time.sleep(args.sleep)
 
             if step % 50 == 0 or bool(info.get("is_success", False)):
@@ -278,20 +399,25 @@ def main():
                     f"Success: {bool(info.get('is_success', False))} | "
                     f"Phase: {int(info.get('phase', 0))}({info.get('phase_name', '')}) | "
                     f"CenterErr: {safe_float(info, 'center_error'):.3f} | "
-                    f"PathCenterErr: {safe_float(info, 'path_center_error'):.3f} | "
                     f"FormErr: {safe_float(info, 'formation_error'):.3f} | "
                     f"SpacingErr: {safe_float(info, 'spacing_error'):.3f} | "
-                    f"MaxDangerSpacing: {safe_float(info, 'max_spacing_during_danger'):.3f} | "
-                    f"MaxDangerShape: {safe_float(info, 'max_shape_error_during_danger'):.3f} | "
-                    f"EffY: {safe_float(info, 'effective_target_center_y'):.3f} | "
+                    f"Speed: {safe_float(info, 'mean_speed'):.3f} | "
+                    f"CmdSpeed: {safe_float(info, 'mean_cmd_speed'):.3f} | "
+                    f"Correction: {safe_float(info, 'mean_correction'):.3f} | "
+                    f"MinSep: {safe_float(info, 'min_pair_dist'):.3f} | "
                     f"ObsMargin: {safe_float(info, 'min_obstacle_margin'):.3f} | "
                     f"ObsColl: {int(safe_float(info, 'obstacle_collision_count'))} | "
                     f"NearMiss: {int(safe_float(info, 'obstacle_near_miss_count'))} | "
-                    f"Crashed: {bool(info.get('crashed', False))}"
+                    f"Collisions: {int(safe_float(info, 'collision_count'))} | "
+                    f"Crashed: {bool(info.get('crashed', False))} | "
+                    f"Safe: {bool(info.get('formation_safe', False))}"
                 )
 
             if terminated or truncated:
                 break
+
+        if args.save_video and len(episode_frames) > len(all_frames):
+            all_frames = episode_frames.copy()
 
         success = bool(last_info.get("is_success", False))
 
@@ -306,11 +432,9 @@ def main():
         rewards_total.append(ep_reward)
 
         min_obstacle_margins.append(safe_float(last_info, "min_obstacle_margin"))
-        obstacle_collisions.append(safe_float(last_info, "episode_obstacle_collision_count"))
-        obstacle_near_misses.append(safe_float(last_info, "episode_near_miss_count"))
+        obstacle_collisions.append(safe_float(last_info, "obstacle_collision_count"))
+        obstacle_near_misses.append(safe_float(last_info, "obstacle_near_miss_count"))
         obstacle_clears.append(float(bool(last_info.get("obstacle_clear", False))))
-        max_spacing_during_danger.append(safe_float(last_info, "max_spacing_during_danger"))
-        max_shape_error_during_danger.append(safe_float(last_info, "max_shape_error_during_danger"))
 
         print(
             f"\nEpisode {ep} finished | "
@@ -320,20 +444,23 @@ def main():
             f"CenterErr: {safe_float(last_info, 'center_error'):.3f} | "
             f"FormErr: {safe_float(last_info, 'formation_error'):.3f} | "
             f"SpacingErr: {safe_float(last_info, 'spacing_error'):.3f} | "
-            f"MaxDangerSpacing: {safe_float(last_info, 'max_spacing_during_danger'):.3f} | "
-            f"MaxDangerShape: {safe_float(last_info, 'max_shape_error_during_danger'):.3f} | "
+            f"Speed: {safe_float(last_info, 'mean_speed'):.3f} | "
+            f"MinSep: {safe_float(last_info, 'min_pair_dist'):.3f} | "
             f"ObsMargin: {safe_float(last_info, 'min_obstacle_margin'):.3f} | "
-            f"ObsCollEp: {int(safe_float(last_info, 'episode_obstacle_collision_count'))} | "
-            f"NearMissEp: {int(safe_float(last_info, 'episode_near_miss_count'))} | "
+            f"ObsColl: {int(safe_float(last_info, 'obstacle_collision_count'))} | "
+            f"NearMiss: {int(safe_float(last_info, 'obstacle_near_miss_count'))} | "
+            f"Collisions: {int(safe_float(last_info, 'collision_count'))} | "
             f"Crashed: {bool(last_info.get('crashed', False))}"
         )
 
     env.close()
 
-    print("\n========== V0.9.2 FORMATION-PRESERVING EVALUATION SUMMARY ==========")
+    if args.save_video:
+        save_video(all_frames, args.video_path)
+
+    print("\n========== OBSTACLE-CURRICULUM EVALUATION SUMMARY ==========")
     print(f"Model path: {args.model_path}")
     print(f"Obstacle layout: {args.obstacle_layout}")
-    print(f"Camera mode: {args.camera_mode}")
     print(f"Episodes: {args.episodes}")
     print(f"Success rate: {np.mean(successes) * 100:.1f}%")
     print(f"Mean reward: {np.mean(rewards_total):.2f}")
@@ -341,13 +468,11 @@ def main():
     print(f"Mean center error: {np.mean(center_errors):.3f} m")
     print(f"Mean formation error: {np.mean(formation_errors):.3f} m")
     print(f"Mean spacing error: {np.mean(spacing_errors):.3f} m")
-    print(f"Mean max danger spacing: {np.mean(max_spacing_during_danger):.3f} m")
-    print(f"Mean max danger shape error: {np.mean(max_shape_error_during_danger):.3f} m")
     print(f"Mean min separation: {np.mean(min_seps):.3f} m")
-    print(f"Mean UAV-UAV collisions: {np.mean(collisions):.3f}")
+    print(f"Mean collisions: {np.mean(collisions):.3f}")
     print(f"Mean min obstacle margin: {np.mean(min_obstacle_margins):.3f} m")
-    print(f"Mean episode obstacle collisions: {np.mean(obstacle_collisions):.3f}")
-    print(f"Mean episode near misses: {np.mean(obstacle_near_misses):.3f}")
+    print(f"Mean obstacle collisions: {np.mean(obstacle_collisions):.3f}")
+    print(f"Mean obstacle near misses: {np.mean(obstacle_near_misses):.3f}")
     print(f"Obstacle clear rate: {np.mean(obstacle_clears) * 100:.1f}%")
     print(f"Crash rate: {np.mean(crashes) * 100:.1f}%")
 

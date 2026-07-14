@@ -19,25 +19,25 @@ parser.add_argument("--render", choices=["human", "headless"], default="headless
 parser.add_argument("--episodes", type=int, default=4000)
 parser.add_argument("--max-steps", type=int, default=1200)
 
-parser.add_argument("--lr-policy", type=float, default=1.5e-4)
-parser.add_argument("--lr-value", type=float, default=7.0e-4)
+parser.add_argument("--lr-policy", type=float, default=2.0e-4)
+parser.add_argument("--lr-value", type=float, default=8.0e-4)
 parser.add_argument("--gamma", type=float, default=0.99)
 parser.add_argument("--gae-lambda", type=float, default=0.95)
 parser.add_argument("--clip-range", type=float, default=0.2)
-parser.add_argument("--ent-coef", type=float, default=0.006)
+parser.add_argument("--ent-coef", type=float, default=0.008)
 parser.add_argument("--vf-coef", type=float, default=0.5)
 parser.add_argument("--max-grad-norm", type=float, default=0.5)
-parser.add_argument("--explore-std", type=float, default=0.018)
+parser.add_argument("--explore-std", type=float, default=0.02)
 parser.add_argument("--update-epochs", type=int, default=8)
 
 parser.add_argument("--resume", action="store_true")
 parser.add_argument("--use-wandb", action="store_true")
-parser.add_argument("--init-from-v091", action="store_true")
+parser.add_argument("--init-from-v085", action="store_true")
 
 parser.add_argument(
-    "--v091-policy-path",
+    "--v085-policy-path",
     type=str,
-    default="checkpoints/v0_9_1_obstacle_curriculum_velocity_3uav/shared_velocity_policy.pth",
+    default="checkpoints/v0_8_5_triangle_velocity_3uav/shared_velocity_policy.pth",
 )
 
 args = parser.parse_args()
@@ -139,17 +139,11 @@ def build_env(stage_cfg):
         obstacle_near_penalty_weight=stage_cfg["obstacle_near_penalty_weight"],
         obstacle_clearance_bonus=stage_cfg["obstacle_clearance_bonus"],
         formation_near_obstacle_weight=stage_cfg["formation_near_obstacle_weight"],
-        spacing_near_obstacle_weight=stage_cfg["spacing_near_obstacle_weight"],
         min_separation=stage_cfg["min_separation"],
         min_obstacle_clearance=stage_cfg["min_obstacle_clearance"],
         obstacle_influence_radius=stage_cfg["obstacle_influence_radius"],
         obstacle_repulsion_gain=stage_cfg["obstacle_repulsion_gain"],
         safety_filter_gain=stage_cfg["safety_filter_gain"],
-        emergency_clearance=stage_cfg["emergency_clearance"],
-        centroid_bypass_gain=stage_cfg["centroid_bypass_gain"],
-        centroid_bypass_window=stage_cfg["centroid_bypass_window"],
-        max_shared_avoidance_speed=stage_cfg["max_shared_avoidance_speed"],
-        formation_lock_gain=stage_cfg["formation_lock_gain"],
         neighbor_dropout_prob=stage_cfg["neighbor_dropout_prob"],
         use_neighbor_dropout=True,
         use_obstacles=stage_cfg["use_obstacles"],
@@ -209,17 +203,34 @@ def load_checkpoint(policy, value, opt_policy, opt_value, ckpt_dir):
     return start_episode, stage_idx
 
 
-def init_policy_from_v091(policy, old_path):
+def partial_init_policy_from_v085(policy, old_path):
     if not os.path.exists(old_path):
-        print(f"[WARN] v0.9.1 policy not found: {old_path}")
+        print(f"[WARN] v0.8.5 policy not found: {old_path}")
         return
 
     try:
         old_state = torch.load(old_path, map_location=device)
-        policy.load_state_dict(old_state)
-        print(f"[INFO] Initialized v0.9.2 policy from v0.9.1 checkpoint: {old_path}")
+        new_state = policy.state_dict()
+
+        if "net.1.weight" in old_state and "net.1.weight" in new_state:
+            old_w = old_state["net.1.weight"]
+            new_w = new_state["net.1.weight"]
+
+            cols = min(old_w.shape[1], new_w.shape[1])
+            new_w[:, :cols] = old_w[:, :cols]
+            new_state["net.1.weight"] = new_w
+
+        for key in ["net.1.bias", "net.3.weight", "net.3.bias", "net.5.weight", "net.5.bias"]:
+            if key in old_state and key in new_state and old_state[key].shape == new_state[key].shape:
+                new_state[key] = old_state[key]
+
+        policy.load_state_dict(new_state)
+
+        print(f"[INFO] Partially initialized obstacle policy from: {old_path}")
+        print("[INFO] Copied compatible layers from v0.8.5. New obstacle observation weights remain trainable.")
+
     except Exception as e:
-        print("[WARN] Could not initialize from v0.9.1. Continuing from random initialization.")
+        print("[WARN] Partial initialization failed. Continuing from random initialization.")
         print(f"[WARN] {e}")
 
 
@@ -238,59 +249,94 @@ def train():
             "use_obstacles": False,
             "obstacle_layout": "none",
             "triangle_side": 1.20,
+            "reference_max_vx": 0.28,
+            "reference_max_vy": 0.20,
+            "reference_max_vz": 0.14,
+            "correction_scale": 0.055,
+            "velocity_lookahead": 0.30,
+            "kp_center": 0.36,
+            "kp_form": 0.72,
+            "kp_alt": 0.45,
+            "goal_bonus": 1500.0,
+            "alive_reward": 0.04,
+            "phase_bonus": 230.0,
+            "progress_weight": 45.0,
+            "center_weight": 3.5,
+            "assigned_target_weight": 1.7,
+            "formation_weight": 30.0,
+            "spacing_weight": 18.0,
+            "velocity_weight": 0.26,
+            "command_weight": 0.09,
+            "correction_weight": 0.13,
+            "smoothness_weight": 0.26,
+            "attitude_weight": 0.85,
+            "collision_penalty": 3500.0,
+            "crash_penalty": 4000.0,
+            "boundary_penalty": 1500.0,
+            "obstacle_collision_penalty": 2500.0,
+            "obstacle_near_penalty_weight": 0.0,
+            "obstacle_clearance_bonus": 0.0,
+            "formation_near_obstacle_weight": 0.0,
+            "min_separation": 0.30,
+            "min_obstacle_clearance": 0.30,
+            "obstacle_influence_radius": 1.05,
+            "obstacle_repulsion_gain": 0.00,
+            "safety_filter_gain": 0.00,
+            "neighbor_dropout_prob": 0.01,
+        },
+        {
+            "name": "easy_offset_obstacle",
+            "mission_stage": 3,
+            "use_obstacles": True,
+            "obstacle_layout": "easy_offset",
+            "triangle_side": 1.20,
             "reference_max_vx": 0.27,
             "reference_max_vy": 0.22,
             "reference_max_vz": 0.14,
             "correction_scale": 0.060,
             "velocity_lookahead": 0.30,
-            "kp_center": 0.38,
+            "kp_center": 0.36,
             "kp_form": 0.72,
             "kp_alt": 0.45,
-            "goal_bonus": 1600.0,
+            "goal_bonus": 1650.0,
             "alive_reward": 0.04,
             "phase_bonus": 240.0,
             "progress_weight": 46.0,
             "center_weight": 3.5,
             "assigned_target_weight": 1.8,
-            "formation_weight": 32.0,
-            "spacing_weight": 20.0,
+            "formation_weight": 31.0,
+            "spacing_weight": 18.0,
             "velocity_weight": 0.27,
             "command_weight": 0.09,
             "correction_weight": 0.13,
             "smoothness_weight": 0.27,
             "attitude_weight": 0.88,
-            "collision_penalty": 3600.0,
-            "crash_penalty": 4200.0,
+            "collision_penalty": 3500.0,
+            "crash_penalty": 4000.0,
             "boundary_penalty": 1500.0,
             "obstacle_collision_penalty": 3000.0,
-            "obstacle_near_penalty_weight": 0.0,
-            "obstacle_clearance_bonus": 0.0,
-            "formation_near_obstacle_weight": 0.0,
-            "spacing_near_obstacle_weight": 0.0,
+            "obstacle_near_penalty_weight": 10.0,
+            "obstacle_clearance_bonus": 8.0,
+            "formation_near_obstacle_weight": 6.0,
             "min_separation": 0.30,
-            "min_obstacle_clearance": 0.32,
-            "obstacle_influence_radius": 1.20,
-            "obstacle_repulsion_gain": 0.0,
-            "safety_filter_gain": 0.0,
-            "emergency_clearance": 0.12,
-            "centroid_bypass_gain": 0.0,
-            "centroid_bypass_window": 1.45,
-            "max_shared_avoidance_speed": 0.0,
-            "formation_lock_gain": 0.0,
-            "neighbor_dropout_prob": 0.01,
+            "min_obstacle_clearance": 0.28,
+            "obstacle_influence_radius": 1.00,
+            "obstacle_repulsion_gain": 0.18,
+            "safety_filter_gain": 0.20,
+            "neighbor_dropout_prob": 0.012,
         },
         {
-            "name": "easy_offset_formation_lock",
+            "name": "side_column_obstacle",
             "mission_stage": 3,
             "use_obstacles": True,
-            "obstacle_layout": "easy_offset",
+            "obstacle_layout": "side_column",
             "triangle_side": 1.20,
             "reference_max_vx": 0.26,
-            "reference_max_vy": 0.24,
+            "reference_max_vy": 0.23,
             "reference_max_vz": 0.14,
             "correction_scale": 0.065,
             "velocity_lookahead": 0.30,
-            "kp_center": 0.38,
+            "kp_center": 0.37,
             "kp_form": 0.72,
             "kp_alt": 0.45,
             "goal_bonus": 1750.0,
@@ -299,8 +345,8 @@ def train():
             "progress_weight": 47.0,
             "center_weight": 3.5,
             "assigned_target_weight": 1.8,
-            "formation_weight": 34.0,
-            "spacing_weight": 22.0,
+            "formation_weight": 32.0,
+            "spacing_weight": 19.0,
             "velocity_weight": 0.28,
             "command_weight": 0.10,
             "correction_weight": 0.14,
@@ -310,44 +356,38 @@ def train():
             "crash_penalty": 4200.0,
             "boundary_penalty": 1500.0,
             "obstacle_collision_penalty": 3500.0,
-            "obstacle_near_penalty_weight": 10.0,
+            "obstacle_near_penalty_weight": 16.0,
             "obstacle_clearance_bonus": 10.0,
-            "formation_near_obstacle_weight": 18.0,
-            "spacing_near_obstacle_weight": 16.0,
+            "formation_near_obstacle_weight": 8.0,
             "min_separation": 0.30,
             "min_obstacle_clearance": 0.30,
             "obstacle_influence_radius": 1.10,
-            "obstacle_repulsion_gain": 0.12,
-            "safety_filter_gain": 0.12,
-            "emergency_clearance": 0.10,
-            "centroid_bypass_gain": 0.45,
-            "centroid_bypass_window": 1.30,
-            "max_shared_avoidance_speed": 0.20,
-            "formation_lock_gain": 0.55,
-            "neighbor_dropout_prob": 0.012,
+            "obstacle_repulsion_gain": 0.24,
+            "safety_filter_gain": 0.25,
+            "neighbor_dropout_prob": 0.015,
         },
         {
-            "name": "side_column_centroid_bypass",
+            "name": "single_center_obstacle",
             "mission_stage": 3,
             "use_obstacles": True,
-            "obstacle_layout": "side_column",
+            "obstacle_layout": "single_center",
             "triangle_side": 1.20,
             "reference_max_vx": 0.25,
-            "reference_max_vy": 0.25,
+            "reference_max_vy": 0.24,
             "reference_max_vz": 0.14,
             "correction_scale": 0.070,
             "velocity_lookahead": 0.30,
             "kp_center": 0.38,
             "kp_form": 0.72,
             "kp_alt": 0.45,
-            "goal_bonus": 1850.0,
+            "goal_bonus": 1900.0,
             "alive_reward": 0.04,
             "phase_bonus": 260.0,
             "progress_weight": 48.0,
             "center_weight": 3.5,
             "assigned_target_weight": 1.8,
-            "formation_weight": 36.0,
-            "spacing_weight": 24.0,
+            "formation_weight": 34.0,
+            "spacing_weight": 20.0,
             "velocity_weight": 0.28,
             "command_weight": 0.10,
             "correction_weight": 0.14,
@@ -356,45 +396,39 @@ def train():
             "collision_penalty": 3600.0,
             "crash_penalty": 4200.0,
             "boundary_penalty": 1500.0,
-            "obstacle_collision_penalty": 3800.0,
-            "obstacle_near_penalty_weight": 14.0,
+            "obstacle_collision_penalty": 4000.0,
+            "obstacle_near_penalty_weight": 20.0,
             "obstacle_clearance_bonus": 12.0,
-            "formation_near_obstacle_weight": 24.0,
-            "spacing_near_obstacle_weight": 20.0,
+            "formation_near_obstacle_weight": 10.0,
             "min_separation": 0.30,
             "min_obstacle_clearance": 0.32,
-            "obstacle_influence_radius": 1.15,
-            "obstacle_repulsion_gain": 0.16,
-            "safety_filter_gain": 0.14,
-            "emergency_clearance": 0.11,
-            "centroid_bypass_gain": 0.55,
-            "centroid_bypass_window": 1.35,
-            "max_shared_avoidance_speed": 0.24,
-            "formation_lock_gain": 0.75,
-            "neighbor_dropout_prob": 0.015,
+            "obstacle_influence_radius": 1.20,
+            "obstacle_repulsion_gain": 0.30,
+            "safety_filter_gain": 0.30,
+            "neighbor_dropout_prob": 0.018,
         },
         {
-            "name": "single_center_formation_preserving",
+            "name": "offset_gate_obstacle",
             "mission_stage": 3,
             "use_obstacles": True,
-            "obstacle_layout": "single_center",
+            "obstacle_layout": "offset_gate",
             "triangle_side": 1.20,
             "reference_max_vx": 0.24,
-            "reference_max_vy": 0.26,
+            "reference_max_vy": 0.25,
             "reference_max_vz": 0.14,
             "correction_scale": 0.075,
             "velocity_lookahead": 0.30,
             "kp_center": 0.38,
             "kp_form": 0.72,
             "kp_alt": 0.45,
-            "goal_bonus": 2000.0,
+            "goal_bonus": 2100.0,
             "alive_reward": 0.04,
-            "phase_bonus": 270.0,
+            "phase_bonus": 280.0,
             "progress_weight": 50.0,
             "center_weight": 3.5,
             "assigned_target_weight": 1.8,
-            "formation_weight": 38.0,
-            "spacing_weight": 26.0,
+            "formation_weight": 36.0,
+            "spacing_weight": 21.0,
             "velocity_weight": 0.30,
             "command_weight": 0.11,
             "correction_weight": 0.15,
@@ -403,68 +437,15 @@ def train():
             "collision_penalty": 3800.0,
             "crash_penalty": 4400.0,
             "boundary_penalty": 1600.0,
-            "obstacle_collision_penalty": 4200.0,
-            "obstacle_near_penalty_weight": 18.0,
+            "obstacle_collision_penalty": 4500.0,
+            "obstacle_near_penalty_weight": 24.0,
             "obstacle_clearance_bonus": 14.0,
-            "formation_near_obstacle_weight": 34.0,
-            "spacing_near_obstacle_weight": 28.0,
-            "min_separation": 0.30,
-            "min_obstacle_clearance": 0.32,
-            "obstacle_influence_radius": 1.20,
-            "obstacle_repulsion_gain": 0.20,
-            "safety_filter_gain": 0.18,
-            "emergency_clearance": 0.12,
-            "centroid_bypass_gain": 0.75,
-            "centroid_bypass_window": 1.45,
-            "max_shared_avoidance_speed": 0.30,
-            "formation_lock_gain": 1.15,
-            "neighbor_dropout_prob": 0.018,
-        },
-        {
-            "name": "offset_gate_formation_preserving",
-            "mission_stage": 3,
-            "use_obstacles": True,
-            "obstacle_layout": "offset_gate",
-            "triangle_side": 1.20,
-            "reference_max_vx": 0.23,
-            "reference_max_vy": 0.27,
-            "reference_max_vz": 0.14,
-            "correction_scale": 0.080,
-            "velocity_lookahead": 0.30,
-            "kp_center": 0.38,
-            "kp_form": 0.72,
-            "kp_alt": 0.45,
-            "goal_bonus": 2200.0,
-            "alive_reward": 0.04,
-            "phase_bonus": 290.0,
-            "progress_weight": 52.0,
-            "center_weight": 3.5,
-            "assigned_target_weight": 1.8,
-            "formation_weight": 40.0,
-            "spacing_weight": 28.0,
-            "velocity_weight": 0.30,
-            "command_weight": 0.11,
-            "correction_weight": 0.15,
-            "smoothness_weight": 0.30,
-            "attitude_weight": 0.95,
-            "collision_penalty": 4000.0,
-            "crash_penalty": 4600.0,
-            "boundary_penalty": 1700.0,
-            "obstacle_collision_penalty": 4600.0,
-            "obstacle_near_penalty_weight": 22.0,
-            "obstacle_clearance_bonus": 16.0,
-            "formation_near_obstacle_weight": 40.0,
-            "spacing_near_obstacle_weight": 34.0,
+            "formation_near_obstacle_weight": 12.0,
             "min_separation": 0.30,
             "min_obstacle_clearance": 0.32,
             "obstacle_influence_radius": 1.25,
-            "obstacle_repulsion_gain": 0.22,
-            "safety_filter_gain": 0.20,
-            "emergency_clearance": 0.12,
-            "centroid_bypass_gain": 0.85,
-            "centroid_bypass_window": 1.50,
-            "max_shared_avoidance_speed": 0.32,
-            "formation_lock_gain": 1.25,
+            "obstacle_repulsion_gain": 0.34,
+            "safety_filter_gain": 0.34,
             "neighbor_dropout_prob": 0.02,
         },
     ]
@@ -474,8 +455,8 @@ def train():
     recent_successes = []
     curr_stage = 0
 
-    ckpt_dir = "checkpoints/v0_9_2_formation_preserving_obstacle_3uav"
-    model_dir = "marl/models/v0_9_2_formation_preserving_obstacle_3uav"
+    ckpt_dir = "checkpoints/v0_9_1_obstacle_curriculum_velocity_3uav"
+    model_dir = "marl/models/v0_9_1_obstacle_curriculum_velocity_3uav"
     log_dir = "results/logs"
 
     os.makedirs(ckpt_dir, exist_ok=True)
@@ -489,8 +470,8 @@ def train():
             import wandb
 
             wandb.init(
-                project="marl-uav-v0-9-2-formation-preserving-obstacle-3uav",
-                name=f"formation-preserving-obstacle-{args.render}",
+                project="marl-uav-v0-9-1-obstacle-curriculum-velocity-3uav",
+                name=f"obstacle-curriculum-velocity-{args.render}",
                 config=vars(args),
                 resume="allow",
             )
@@ -514,14 +495,15 @@ def train():
     print(f"Observation dim per agent: {obs_dim}")
     print(f"Action dim per agent: {act_dim}")
     print("Action meaning: learned velocity correction [rx, ry, rz]")
-    print("Mission: formation-preserving obstacle-aware triangle flight")
+    print("Mission: takeoff -> hover -> obstacle-aware triangle flight -> goal hover -> landing")
     print("Curriculum: no obstacle -> easy offset -> side column -> center obstacle -> gate obstacle")
+    print("Distance: start x=0.0, goal x=7.0")
 
     policy = SharedVelocityPolicyNet(obs_dim, act_dim).to(device)
     value = CentralValueNet(obs_dim_total).to(device)
 
-    if args.init_from_v091 and not args.resume:
-        init_policy_from_v091(policy, args.v091_policy_path)
+    if args.init_from_v085 and not args.resume:
+        partial_init_policy_from_v085(policy, args.v085_policy_path)
 
     opt_policy = torch.optim.Adam(policy.parameters(), lr=args.lr_policy)
     opt_value = torch.optim.Adam(value.parameters(), lr=args.lr_value)
@@ -548,7 +530,7 @@ def train():
 
         print(f"Resumed from episode {start_episode}, stage {curr_stage + 1}: {stage_cfg['name']}")
 
-    csv_path = os.path.join(log_dir, "training_logs_v0_9_2_formation_preserving_obstacle_3uav.csv")
+    csv_path = os.path.join(log_dir, "training_logs_v0_9_1_obstacle_curriculum_velocity_3uav.csv")
 
     if not os.path.exists(csv_path):
         with open(csv_path, "w", newline="") as f:
@@ -565,7 +547,6 @@ def train():
                     "phase",
                     "phase_name",
                     "center_error",
-                    "path_center_error",
                     "mean_dist_to_target",
                     "formation_error",
                     "spacing_error",
@@ -577,14 +558,9 @@ def train():
                     "collision_count",
                     "min_pair_dist",
                     "min_obstacle_margin",
-                    "centroid_obstacle_margin",
+                    "mean_obstacle_margin",
                     "obstacle_collision_count",
-                    "episode_obstacle_collision_count",
                     "obstacle_near_miss_count",
-                    "episode_near_miss_count",
-                    "formation_obstacle_danger",
-                    "max_spacing_during_danger",
-                    "max_shape_error_during_danger",
                     "obstacle_clear",
                     "crashed",
                     "progress",
@@ -592,7 +568,6 @@ def train():
                     "centroid_x",
                     "centroid_y",
                     "centroid_z",
-                    "effective_target_center_y",
                 ]
             )
 
@@ -617,7 +592,11 @@ def train():
         entropy_coef = args.ent_coef * max(0.20, 1.0 - ep / (0.85 * args.episodes))
 
         for _ in range(args.max_steps):
-            global_obs_t = torch.tensor(flat_obs, dtype=torch.float32, device=device).unsqueeze(0)
+            global_obs_t = torch.tensor(
+                flat_obs,
+                dtype=torch.float32,
+                device=device,
+            ).unsqueeze(0)
 
             with torch.no_grad():
                 value_t = value(global_obs_t).item()
@@ -628,7 +607,12 @@ def train():
 
             for i in range(n_agents):
                 obs_i = obs_split[i]
-                obs_t = torch.tensor(obs_i, dtype=torch.float32, device=device).unsqueeze(0)
+
+                obs_t = torch.tensor(
+                    obs_i,
+                    dtype=torch.float32,
+                    device=device,
+                ).unsqueeze(0)
 
                 with torch.no_grad():
                     mu = policy(obs_t)
@@ -665,7 +649,12 @@ def train():
                 break
 
         with torch.no_grad():
-            next_global_obs_t = torch.tensor(flat_obs, dtype=torch.float32, device=device).unsqueeze(0)
+            next_global_obs_t = torch.tensor(
+                flat_obs,
+                dtype=torch.float32,
+                device=device,
+            ).unsqueeze(0)
+
             next_value = value(next_global_obs_t).item()
 
         advantages_list, returns_list = compute_gae(
@@ -683,10 +672,29 @@ def train():
         if len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        global_obs_batch = torch.tensor(np.array(buf_global_obs), dtype=torch.float32, device=device)
-        local_obs_batch = torch.tensor(np.array(buf_local_obs), dtype=torch.float32, device=device)
-        action_batch = torch.tensor(np.array(buf_actions), dtype=torch.float32, device=device)
-        old_logp_batch = torch.tensor(np.array(buf_logps), dtype=torch.float32, device=device)
+        global_obs_batch = torch.tensor(
+            np.array(buf_global_obs),
+            dtype=torch.float32,
+            device=device,
+        )
+
+        local_obs_batch = torch.tensor(
+            np.array(buf_local_obs),
+            dtype=torch.float32,
+            device=device,
+        )
+
+        action_batch = torch.tensor(
+            np.array(buf_actions),
+            dtype=torch.float32,
+            device=device,
+        )
+
+        old_logp_batch = torch.tensor(
+            np.array(buf_logps),
+            dtype=torch.float32,
+            device=device,
+        )
 
         t_steps = local_obs_batch.shape[0]
 
@@ -705,20 +713,32 @@ def train():
 
             new_logp = dist.log_prob(action_actor).sum(dim=-1)
             entropy = dist.entropy().sum(dim=-1)
+
             ratio = torch.exp(new_logp - old_logp_actor)
 
             surr1 = ratio * adv_actor
-            surr2 = torch.clamp(ratio, 1.0 - args.clip_range, 1.0 + args.clip_range) * adv_actor
+            surr2 = torch.clamp(
+                ratio,
+                1.0 - args.clip_range,
+                1.0 + args.clip_range,
+            ) * adv_actor
 
             policy_loss = -torch.min(surr1, surr2).mean()
+
             new_values = value(global_obs_batch)
             value_loss = (new_values - returns).pow(2).mean()
+
             entropy_term = entropy.mean()
 
-            total_loss = policy_loss + args.vf_coef * value_loss - entropy_coef * entropy_term
+            total_loss = (
+                policy_loss
+                + args.vf_coef * value_loss
+                - entropy_coef * entropy_term
+            )
 
             opt_policy.zero_grad()
             opt_value.zero_grad()
+
             total_loss.backward()
 
             nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
@@ -741,22 +761,20 @@ def train():
         collision_count = safe_float(last_info, "collision_count")
         obstacle_collision_count = safe_float(last_info, "obstacle_collision_count")
         obstacle_near_miss_count = safe_float(last_info, "obstacle_near_miss_count")
-        max_spacing_danger = safe_float(last_info, "max_spacing_during_danger")
-        max_shape_danger = safe_float(last_info, "max_shape_error_during_danger")
+        min_obstacle_margin = safe_float(last_info, "min_obstacle_margin", 999.0)
         crashed = bool(last_info.get("crashed", False))
         phase = int(last_info.get("phase", 0))
 
         score = (
-            14.0 * float(success)
+            12.0 * float(success)
             + phase * 4.0
             - center_error
-            - 2.0 * formation_error
-            - 2.0 * spacing_error
+            - formation_error
+            - spacing_error
             - 4.0 * collision_count
             - 5.0 * obstacle_collision_count
-            - 1.5 * obstacle_near_miss_count
-            - max_spacing_danger
-            - max_shape_danger
+            - 1.0 * obstacle_near_miss_count
+            + 0.10 * min_obstacle_margin
             - 4.0 * float(crashed)
         )
 
@@ -765,12 +783,12 @@ def train():
 
             torch.save(
                 policy.state_dict(),
-                os.path.join(model_dir, "best_shared_velocity_policy_v0_9_2_formation_preserving.pth"),
+                os.path.join(model_dir, "best_shared_velocity_policy_v0_9_1_obstacle_curriculum.pth"),
             )
 
             torch.save(
                 value.state_dict(),
-                os.path.join(model_dir, "best_central_value_v0_9_2_formation_preserving.pth"),
+                os.path.join(model_dir, "best_central_value_v0_9_1_obstacle_curriculum.pth"),
             )
 
         recent_successes.append(float(success))
@@ -812,7 +830,6 @@ def train():
                     "success": float(success),
                     "phase": phase,
                     "center_error": center_error,
-                    "path_center_error": safe_float(last_info, "path_center_error"),
                     "formation_error": formation_error,
                     "spacing_error": spacing_error,
                     "mean_dist_to_target": safe_float(last_info, "mean_dist_to_target"),
@@ -820,19 +837,14 @@ def train():
                     "mean_ref_speed": safe_float(last_info, "mean_ref_speed"),
                     "mean_cmd_speed": safe_float(last_info, "mean_cmd_speed"),
                     "mean_correction": safe_float(last_info, "mean_correction"),
+                    "action_smoothness": safe_float(last_info, "action_smoothness"),
                     "collision_count": collision_count,
                     "min_pair_dist": safe_float(last_info, "min_pair_dist"),
                     "min_obstacle_margin": safe_float(last_info, "min_obstacle_margin"),
-                    "centroid_obstacle_margin": safe_float(last_info, "centroid_obstacle_margin"),
-                    "obstacle_collision_count": obstacle_collision_count,
-                    "episode_obstacle_collision_count": safe_float(last_info, "episode_obstacle_collision_count"),
-                    "obstacle_near_miss_count": obstacle_near_miss_count,
-                    "episode_near_miss_count": safe_float(last_info, "episode_near_miss_count"),
-                    "formation_obstacle_danger": float(bool(last_info.get("formation_obstacle_danger", False))),
-                    "max_spacing_during_danger": max_spacing_danger,
-                    "max_shape_error_during_danger": max_shape_danger,
+                    "mean_obstacle_margin": safe_float(last_info, "mean_obstacle_margin"),
+                    "obstacle_collision_count": safe_float(last_info, "obstacle_collision_count"),
+                    "obstacle_near_miss_count": safe_float(last_info, "obstacle_near_miss_count"),
                     "obstacle_clear": float(bool(last_info.get("obstacle_clear", False))),
-                    "effective_target_center_y": safe_float(last_info, "effective_target_center_y"),
                     "crashed": float(crashed),
                     "progress": safe_float(last_info, "progress"),
                     "formation_safe": float(bool(last_info.get("formation_safe", False))),
@@ -859,7 +871,6 @@ def train():
                     last_info.get("phase", 0),
                     last_info.get("phase_name", ""),
                     last_info.get("center_error", 0.0),
-                    last_info.get("path_center_error", 0.0),
                     last_info.get("mean_dist_to_target", 0.0),
                     last_info.get("formation_error", 0.0),
                     last_info.get("spacing_error", 0.0),
@@ -871,14 +882,9 @@ def train():
                     last_info.get("collision_count", 0),
                     last_info.get("min_pair_dist", 0.0),
                     last_info.get("min_obstacle_margin", 0.0),
-                    last_info.get("centroid_obstacle_margin", 0.0),
+                    last_info.get("mean_obstacle_margin", 0.0),
                     last_info.get("obstacle_collision_count", 0),
-                    last_info.get("episode_obstacle_collision_count", 0),
                     last_info.get("obstacle_near_miss_count", 0),
-                    last_info.get("episode_near_miss_count", 0),
-                    int(last_info.get("formation_obstacle_danger", False)),
-                    last_info.get("max_spacing_during_danger", 0.0),
-                    last_info.get("max_shape_error_during_danger", 0.0),
                     int(last_info.get("obstacle_clear", False)),
                     int(last_info.get("crashed", False)),
                     last_info.get("progress", 0.0),
@@ -886,7 +892,6 @@ def train():
                     last_info.get("centroid_x", 0.0),
                     last_info.get("centroid_y", 0.0),
                     last_info.get("centroid_z", 0.0),
-                    last_info.get("effective_target_center_y", 0.0),
                 ]
             )
 
@@ -914,12 +919,16 @@ def train():
                 f"CenterErr: {center_error:.3f} | "
                 f"FormErr: {formation_error:.3f} | "
                 f"SpacingErr: {spacing_error:.3f} | "
-                f"MaxDangerSpacing: {max_spacing_danger:.3f} | "
-                f"MaxDangerShape: {max_shape_danger:.3f} | "
+                f"Speed: {safe_float(last_info, 'mean_speed'):.3f} | "
+                f"CmdSpeed: {safe_float(last_info, 'mean_cmd_speed'):.3f} | "
+                f"Correction: {safe_float(last_info, 'mean_correction'):.3f} | "
+                f"MinSep: {safe_float(last_info, 'min_pair_dist'):.3f} | "
                 f"ObsMargin: {safe_float(last_info, 'min_obstacle_margin'):.3f} | "
-                f"ObsColl: {int(obstacle_collision_count)} | "
-                f"NearMiss: {int(obstacle_near_miss_count)} | "
-                f"Crashed: {crashed}"
+                f"ObsColl: {int(safe_float(last_info, 'obstacle_collision_count'))} | "
+                f"NearMiss: {int(safe_float(last_info, 'obstacle_near_miss_count'))} | "
+                f"Collisions: {int(collision_count)} | "
+                f"Crashed: {crashed} | "
+                f"Safe: {bool(last_info.get('formation_safe', False))}"
             )
 
         if patience >= patience_limit:

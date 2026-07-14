@@ -1,0 +1,536 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="industrial_uav_validation_world">
+
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+
+    <!-- Lighting -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 12 0 0 0</pose>
+      <diffuse>0.95 0.95 0.95 1</diffuse>
+      <specular>0.25 0.25 0.25 1</specular>
+      <direction>-0.4 0.3 -0.9</direction>
+    </light>
+
+    <light type="point" name="lab_light_1">
+      <pose>-2.5 0 5 0 0 0</pose>
+      <diffuse>0.9 0.9 0.85 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>12</range>
+        <constant>0.8</constant>
+        <linear>0.05</linear>
+        <quadratic>0.01</quadratic>
+      </attenuation>
+    </light>
+
+    <light type="point" name="lab_light_2">
+      <pose>3 0 5 0 0 0</pose>
+      <diffuse>0.9 0.9 0.85 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>12</range>
+        <constant>0.8</constant>
+        <linear>0.05</linear>
+        <quadratic>0.01</quadratic>
+      </attenuation>
+    </light>
+
+    <!-- Ground -->
+    <model name="floor">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>10 6 0.05</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>10 6 0.05</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.38 0.38 0.38 1</ambient>
+            <diffuse>0.42 0.42 0.42 1</diffuse>
+            <specular>0.08 0.08 0.08 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Back wall -->
+    <model name="back_wall">
+      <static>true</static>
+      <pose>0 3.0 1.5 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>10 0.08 3.0</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.62 0.62 0.60 1</ambient>
+            <diffuse>0.68 0.68 0.66 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Side low walls / boundaries -->
+    <model name="left_boundary">
+      <static>true</static>
+      <pose>0 -3.0 0.45 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>10 0.08 0.9</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.36 0.16 1</ambient>
+            <diffuse>0.60 0.40 0.18 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="right_boundary">
+      <static>true</static>
+      <pose>0 3.0 0.45 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>10 0.08 0.9</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.36 0.16 1</ambient>
+            <diffuse>0.60 0.40 0.18 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Industrial pillars -->
+    <model name="pillar_1">
+      <static>true</static>
+      <pose>-3.5 -2.2 1.25 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.18 0.18 2.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.2 0.22 1</ambient>
+            <diffuse>0.25 0.25 0.27 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="pillar_2">
+      <static>true</static>
+      <pose>-3.5 2.2 1.25 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.18 0.18 2.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.2 0.22 1</ambient>
+            <diffuse>0.25 0.25 0.27 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="pillar_3">
+      <static>true</static>
+      <pose>3.5 -2.2 1.25 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.18 0.18 2.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.2 0.22 1</ambient>
+            <diffuse>0.25 0.25 0.27 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="pillar_4">
+      <static>true</static>
+      <pose>3.5 2.2 1.25 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.18 0.18 2.5</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.2 0.2 0.22 1</ambient>
+            <diffuse>0.25 0.25 0.27 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Overhead frame -->
+    <model name="overhead_beam_front">
+      <static>true</static>
+      <pose>0 -2.2 2.55 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>7.2 0.12 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.12 0.13 1</ambient>
+            <diffuse>0.18 0.18 0.20 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="overhead_beam_back">
+      <static>true</static>
+      <pose>0 2.2 2.55 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>7.2 0.12 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.12 0.13 1</ambient>
+            <diffuse>0.18 0.18 0.20 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="overhead_beam_left">
+      <static>true</static>
+      <pose>-3.5 0 2.55 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.12 4.4 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.12 0.13 1</ambient>
+            <diffuse>0.18 0.18 0.20 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="overhead_beam_right">
+      <static>true</static>
+      <pose>3.5 0 2.55 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>0.12 4.4 0.12</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.12 0.13 1</ambient>
+            <diffuse>0.18 0.18 0.20 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Equipment / obstacle-like objects away from main flight path -->
+    <model name="equipment_box_left">
+      <static>true</static>
+      <pose>-0.7 -2.0 0.35 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>1.0 0.5 0.7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.12 0.28 0.45 1</ambient>
+            <diffuse>0.14 0.35 0.55 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="equipment_box_right">
+      <static>true</static>
+      <pose>1.2 2.0 0.45 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>1.2 0.55 0.9</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.45 0.20 0.12 1</ambient>
+            <diffuse>0.55 0.25 0.15 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="central_low_obstacle_placeholder">
+      <static>true</static>
+      <pose>0.2 1.25 0.25 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.18</radius>
+              <length>0.50</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.85 0.75 0.10 1</ambient>
+            <diffuse>0.95 0.85 0.12 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Start marker -->
+    <model name="start_marker">
+      <static>true</static>
+      <pose>-2.4 0 0.04 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.22</radius>
+              <length>0.04</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.05 1.0 0.20 1</ambient>
+            <diffuse>0.05 1.0 0.20 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Goal marker -->
+    <model name="goal_marker">
+      <static>true</static>
+      <pose>3.0 0 0.05 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.22</radius>
+              <length>0.06</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.0 0.80 1.0 1</ambient>
+            <diffuse>0.0 0.80 1.0 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- UAV 1 proxy -->
+    <model name="uav1">
+      <static>false</static>
+      <pose>-1.8 0.0 0.35 0 0 0</pose>
+      <link name="body">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>0.0001</ixx>
+            <iyy>0.0001</iyy>
+            <izz>0.0001</izz>
+          </inertia>
+        </inertial>
+
+        <collision name="collision">
+          <geometry>
+            <sphere>
+              <radius>0.10</radius>
+            </sphere>
+          </geometry>
+        </collision>
+
+        <visual name="center">
+          <geometry>
+            <sphere>
+              <radius>0.10</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>1.0 0.10 0.10 1</ambient>
+            <diffuse>1.0 0.15 0.15 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name="arm_x">
+          <geometry>
+            <box>
+              <size>0.55 0.04 0.04</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.05 0.05 0.05 1</ambient>
+            <diffuse>0.08 0.08 0.08 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name="arm_y">
+          <geometry>
+            <box>
+              <size>0.04 0.55 0.04</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.05 0.05 0.05 1</ambient>
+            <diffuse>0.08 0.08 0.08 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- UAV 2 proxy -->
+    <model name="uav2">
+      <static>false</static>
+      <pose>-2.75 0.6 0.35 0 0 0</pose>
+      <link name="body">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>0.0001</ixx>
+            <iyy>0.0001</iyy>
+            <izz>0.0001</izz>
+          </inertia>
+        </inertial>
+
+        <collision name="collision">
+          <geometry>
+            <sphere>
+              <radius>0.10</radius>
+            </sphere>
+          </geometry>
+        </collision>
+
+        <visual name="center">
+          <geometry>
+            <sphere>
+              <radius>0.10</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.05 1.0 0.20 1</ambient>
+            <diffuse>0.10 1.0 0.25 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name="arm_x">
+          <geometry>
+            <box>
+              <size>0.55 0.04 0.04</size>
+            </box>
+          </geometry>
+        </visual>
+
+        <visual name="arm_y">
+          <geometry>
+            <box>
+              <size>0.04 0.55 0.04</size>
+            </box>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+
+    <!-- UAV 3 proxy -->
+    <model name="uav3">
+      <static>false</static>
+      <pose>-2.75 -0.6 0.35 0 0 0</pose>
+      <link name="body">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>0.0001</ixx>
+            <iyy>0.0001</iyy>
+            <izz>0.0001</izz>
+          </inertia>
+        </inertial>
+
+        <collision name="collision">
+          <geometry>
+            <sphere>
+              <radius>0.10</radius>
+            </sphere>
+          </geometry>
+        </collision>
+
+        <visual name="center">
+          <geometry>
+            <sphere>
+              <radius>0.10</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.10 0.35 1.0 1</ambient>
+            <diffuse>0.15 0.45 1.0 1</diffuse>
+          </material>
+        </visual>
+
+        <visual name="arm_x">
+          <geometry>
+            <box>
+              <size>0.55 0.04 0.04</size>
+            </box>
+          </geometry>
+        </visual>
+
+        <visual name="arm_y">
+          <geometry>
+            <box>
+              <size>0.04 0.55 0.04</size>
+            </box>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>
