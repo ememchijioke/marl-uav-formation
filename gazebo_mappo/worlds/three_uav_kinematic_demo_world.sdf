@@ -1,0 +1,231 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="three_uav_kinematic_demo_world">
+
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 8 0 0 0</pose>
+      <diffuse>0.95 0.95 0.95 1</diffuse>
+      <specular>0.25 0.25 0.25 1</specular>
+      <direction>-0.4 0.2 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>8 4</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>8 4</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.42 0.42 0.42 1</ambient>
+            <diffuse>0.45 0.45 0.45 1</diffuse>
+            <specular>0.05 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="left_wall">
+      <static>true</static>
+      <pose>0 2.0 0.35 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>8.0 0.05 0.7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.70 0.42 0.14 1</ambient>
+            <diffuse>0.75 0.45 0.16 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="right_wall">
+      <static>true</static>
+      <pose>0 -2.0 0.35 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>8.0 0.05 0.7</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.70 0.42 0.14 1</ambient>
+            <diffuse>0.75 0.45 0.16 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="start_marker">
+      <static>true</static>
+      <pose>-2.1 0 0.02 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.18</radius>
+              <length>0.03</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.1 1.0 0.25 1</ambient>
+            <diffuse>0.1 1.0 0.25 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="goal_marker">
+      <static>true</static>
+      <pose>2.6 0 0.03 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.18</radius>
+              <length>0.06</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.0 0.85 1.0 1</ambient>
+            <diffuse>0.0 0.85 1.0 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- UAV proxy 1 -->
+    <model name="uav1">
+      <static>false</static>
+      <pose>-2.1 0.0 0.25 0 0 0</pose>
+      <link name="body">
+        <visual name="center">
+          <geometry>
+            <sphere>
+              <radius>0.09</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>1.0 0.2 0.2 1</ambient>
+            <diffuse>1.0 0.2 0.2 1</diffuse>
+          </material>
+        </visual>
+        <visual name="arm_x">
+          <geometry>
+            <box>
+              <size>0.45 0.04 0.04</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.1 1</ambient>
+            <diffuse>0.1 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+        <visual name="arm_y">
+          <geometry>
+            <box>
+              <size>0.04 0.45 0.04</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.1 0.1 0.1 1</ambient>
+            <diffuse>0.1 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- UAV proxy 2 -->
+    <model name="uav2">
+      <static>false</static>
+      <pose>-2.1 0.6 0.25 0 0 0</pose>
+      <link name="body">
+        <visual name="center">
+          <geometry>
+            <sphere>
+              <radius>0.09</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.2 1.0 0.2 1</ambient>
+            <diffuse>0.2 1.0 0.2 1</diffuse>
+          </material>
+        </visual>
+        <visual name="arm_x">
+          <geometry>
+            <box>
+              <size>0.45 0.04 0.04</size>
+            </box>
+          </geometry>
+        </visual>
+        <visual name="arm_y">
+          <geometry>
+            <box>
+              <size>0.04 0.45 0.04</size>
+            </box>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+
+    <!-- UAV proxy 3 -->
+    <model name="uav3">
+      <static>false</static>
+      <pose>-2.1 -0.6 0.25 0 0 0</pose>
+      <link name="body">
+        <visual name="center">
+          <geometry>
+            <sphere>
+              <radius>0.09</radius>
+            </sphere>
+          </geometry>
+          <material>
+            <ambient>0.2 0.4 1.0 1</ambient>
+            <diffuse>0.2 0.4 1.0 1</diffuse>
+          </material>
+        </visual>
+        <visual name="arm_x">
+          <geometry>
+            <box>
+              <size>0.45 0.04 0.04</size>
+            </box>
+          </geometry>
+        </visual>
+        <visual name="arm_y">
+          <geometry>
+            <box>
+              <size>0.04 0.45 0.04</size>
+            </box>
+          </geometry>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>
