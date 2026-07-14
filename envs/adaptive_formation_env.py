@@ -235,7 +235,7 @@ class AdaptiveFormationEnv(gym.Env):
             for _ in range(self.num_agents)
         ]
 
-        self.obs_dim_per_agent = 36
+        self.obs_dim_per_agent = 44
         self.act_dim_per_agent = 3
 
         self.observation_space = spaces.Box(
@@ -655,6 +655,25 @@ class AdaptiveFormationEnv(gym.Env):
                 1.0,
             )
 
+            # Known-obstacle information for non-APF MAPPO.
+            #
+            # Features:
+            #   nearest obstacle relative vector (3)
+            #   obstacle size (3)
+            #   signed clearance (1)
+            #   valid mask (1)
+            #
+            # Total: 8 additional features per UAV.
+            if hasattr(self, "obstacle_manager"):
+                obstacle_features = (
+                    self.obstacle_manager.obstacle_features(own_pos)
+                )
+            else:
+                obstacle_features = np.zeros(
+                    8,
+                    dtype=np.float32,
+                )
+
             obs_i = np.concatenate(
                 [
                     rel_target_norm.astype(np.float32),
@@ -671,6 +690,7 @@ class AdaptiveFormationEnv(gym.Env):
                     reference_velocity_norm.astype(np.float32),
                     formation_tracking_error_norm.astype(np.float32),
                     spacing_error_norm.astype(np.float32),
+                    obstacle_features.astype(np.float32),
                 ],
                 axis=0,
             ).astype(np.float32)
