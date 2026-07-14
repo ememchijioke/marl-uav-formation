@@ -6,26 +6,33 @@ from gym_pybullet_drones.utils.enums import DroneModel, Physics
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
+from envs.formation_manager import FormationManager
+from envs.scenario_manager import ScenarioManager
 
-class MultiUAVVelocityFormationEnv(gym.Env):
+
+class AdaptiveFormationEnv(gym.Env):
     """
-    Triangle-only 3-UAV reference-guided velocity correction environment.
+    Three-UAV reference-guided adaptive formation environment.
 
     Mission:
-        Phase 0: Takeoff to target altitude
-        Phase 1: Hover at start in triangle formation
-        Phase 2: Fly triangle formation to goal
-        Phase 3: Hover at goal
-        Phase 4: Land
+        Phase 0: Take off in triangle formation
+        Phase 1: Hover at the start in triangle formation
+        Phase 2: Transition from triangle to line
+        Phase 3: Fly to the goal in line formation
+        Phase 4: Transition from line back to triangle
+        Phase 5: Hover at the goal in triangle formation
+        Phase 6: Land in triangle formation
 
     Control:
         v_final = v_reference + learned_velocity_correction
 
-    Actor observation per UAV = 36:
+    This is the non-APF foundation. No obstacle repulsive force is applied.
+
+    Actor observation per UAV remains 36-dimensional:
         relative_assigned_target(3)
         own_velocity(3)
         altitude_error(1)
-        mission_phase_onehot(5)
+        mission_phase_group_onehot(5)
         neighbor_1_relative_position(3)
         neighbor_1_relative_velocity(3)
         neighbor_1_valid_mask(1)
@@ -55,6 +62,7 @@ class MultiUAVVelocityFormationEnv(gym.Env):
         start_x=0.0,
         goal_x=7.0,
         triangle_side=1.20,
+        formation_transition_steps=120,
         reference_max_vx=0.30,
         reference_max_vy=0.22,
         reference_max_vz=0.14,
@@ -103,6 +111,10 @@ class MultiUAVVelocityFormationEnv(gym.Env):
         self.goal_x = float(goal_x)
 
         self.triangle_side = float(triangle_side)
+        self.formation_transition_steps = int(formation_transition_steps)
+
+        if self.formation_transition_steps <= 0:
+            raise ValueError("formation_transition_steps must be greater than zero.")
 
         self.reference_max_vel = np.array(
             [reference_max_vx, reference_max_vy, reference_max_vz],
@@ -146,51 +158,38 @@ class MultiUAVVelocityFormationEnv(gym.Env):
         self.spacing_error_scale = 1.5
         self.altitude_scale = 1.0
 
-        self.phase_names = [
-            "takeoff",
-            "start_hover",
-            "triangle_to_goal",
-            "goal_hover",
-            "landing",
-        ]
-
-        self.max_phase_for_stage = {
-            1: 2,
-            2: 3,
-            3: 4,
-        }[self.mission_stage]
-
-        self.start_center = np.array(
-            [self.start_x, 0.0, self.target_altitude],
-            dtype=np.float32,
+        self.scenario_manager = ScenarioManager(
+            start_x=self.start_x,
+            goal_x=self.goal_x,
+            target_altitude=self.target_altitude,
+            landing_altitude=self.landing_altitude,
+            mission_stage=self.mission_stage,
         )
 
-        self.goal_center = np.array(
-            [self.goal_x, 0.0, self.target_altitude],
-            dtype=np.float32,
+        # Compatibility aliases used by the existing reward and control code.
+        self.phase_names = self.scenario_manager.phase_names
+        self.max_phase_for_stage = self.scenario_manager.max_phase
+        self.start_center = self.scenario_manager.start_center.copy()
+        self.goal_center = self.scenario_manager.goal_center.copy()
+        self.landing_center = self.scenario_manager.landing_center.copy()
+
+        # `formations.py` uses centroid-radius style spacing for the triangle.
+        # triangle_side / sqrt(3) preserves the original triangle side length.
+        formation_spacing = self.triangle_side / np.sqrt(3.0)
+
+        self.formation_manager = FormationManager(
+            initial_formation="triangle",
+            spacing=formation_spacing,
+            transition_steps=self.formation_transition_steps,
         )
 
-        self.landing_center = np.array(
-            [self.goal_x, 0.0, self.landing_altitude],
-            dtype=np.float32,
-        )
-
-        h = np.sqrt(3.0) / 2.0 * self.triangle_side
-
-        self.triangle_offsets = np.array(
-            [
-                [2.0 * h / 3.0, 0.0, 0.0],
-                [-h / 3.0, -self.triangle_side / 2.0, 0.0],
-                [-h / 3.0, self.triangle_side / 2.0, 0.0],
-            ],
-            dtype=np.float32,
-        )
+        initial_offsets = self.formation_manager.current_offsets.copy()
 
         self.initial_xyzs = np.array(
             [
-                self.start_center + self.triangle_offsets[0] + np.array([0.0, 0.0, -0.95]),
-                self.start_center + self.triangle_offsets[1] + np.array([0.0, 0.0, -0.95]),
-                self.start_center + self.triangle_offsets[2] + np.array([0.0, 0.0, -0.95]),
+                self.start_center + initial_offsets[0] + np.array([0.0, 0.0, -0.95]),
+                self.start_center + initial_offsets[1] + np.array([0.0, 0.0, -0.95]),
+                self.start_center + initial_offsets[2] + np.array([0.0, 0.0, -0.95]),
             ],
             dtype=np.float32,
         )
@@ -270,6 +269,8 @@ class MultiUAVVelocityFormationEnv(gym.Env):
         self.prev_reference_velocity = np.zeros((self.num_agents, 3), dtype=np.float32)
         self.prev_final_velocity = np.zeros((self.num_agents, 3), dtype=np.float32)
 
+        self.formation_manager.reset("triangle")
+
         sim_obs = self._safe_reset(seed=seed, options=options)
         sim_obs = self._to_numpy_obs(sim_obs)
 
@@ -304,15 +305,18 @@ class MultiUAVVelocityFormationEnv(gym.Env):
         learned_action = np.asarray(action, dtype=np.float32).reshape(self.num_agents, 3)
         learned_action = np.clip(learned_action, -1.0, 1.0)
 
+        # Advance a requested formation transition exactly once per environment step.
+        self.formation_manager.update()
+
         current_sim_obs = self._get_current_sim_obs()
         reference_velocity, formation_tracking_error = self._compute_reference_velocity(current_sim_obs)
 
         phase_correction_scale = self.correction_scale
 
-        if self.phase == 3:
+        if self.phase == 5:
             phase_correction_scale = min(self.correction_scale, 0.04)
 
-        elif self.phase == 4:
+        elif self.phase == 6:
             phase_correction_scale = min(self.correction_scale, 0.03)
 
         correction_velocity = phase_correction_scale * learned_action
@@ -339,7 +343,7 @@ class MultiUAVVelocityFormationEnv(gym.Env):
 
             cmd_vel = final_velocity[i].copy()
 
-            if self.phase != 4:
+            if self.phase != 6:
                 if cur_pos[2] < 0.15 and cmd_vel[2] < 0.0:
                     cmd_vel[2] = 0.0
 
@@ -354,7 +358,7 @@ class MultiUAVVelocityFormationEnv(gym.Env):
             target_pos[0] = np.clip(target_pos[0], -1.0, self.goal_x + 1.2)
             target_pos[1] = np.clip(target_pos[1], -2.5, 2.5)
 
-            if self.phase == 4:
+            if self.phase == 6:
                 target_pos[2] = np.clip(target_pos[2], 0.04, 1.20)
             else:
                 target_pos[2] = np.clip(target_pos[2], 0.05, 1.35)
@@ -438,19 +442,9 @@ class MultiUAVVelocityFormationEnv(gym.Env):
         return np.asarray(rows, dtype=np.float32)
 
     def _phase_target_and_offsets(self):
-        if self.phase == 0:
-            return self.start_center.copy(), self.triangle_offsets.copy()
-
-        if self.phase == 1:
-            return self.start_center.copy(), self.triangle_offsets.copy()
-
-        if self.phase == 2:
-            return self.goal_center.copy(), self.triangle_offsets.copy()
-
-        if self.phase == 3:
-            return self.goal_center.copy(), self.triangle_offsets.copy()
-
-        return self.landing_center.copy(), self.triangle_offsets.copy()
+        target_center = self.scenario_manager.get_target_center(self.phase)
+        offsets = self.formation_manager.current_offsets.copy()
+        return target_center, offsets
 
     def _desired_pair_distances(self, formation_offsets):
         distances = {}
@@ -481,13 +475,13 @@ class MultiUAVVelocityFormationEnv(gym.Env):
             form_cmd = self.kp_form * formation_tracking_error[i]
             reference_velocity[i] = center_velocity_cmd + form_cmd
 
-        if self.phase == 1:
+        if self.phase in (1, 2):
             reference_velocity[:, 0] *= 0.30
 
-        elif self.phase == 3:
+        elif self.phase in (4, 5):
             reference_velocity[:, 0] *= 0.20
 
-        if self.phase == 4:
+        if self.phase == 6:
             reference_velocity[:, 0] *= 0.15
             reference_velocity[:, 1] *= 0.45
             reference_velocity[:, 2] = np.minimum(reference_velocity[:, 2], -0.05)
@@ -512,8 +506,20 @@ class MultiUAVVelocityFormationEnv(gym.Env):
             dtype=np.float32,
         )
 
+        # Preserve the original 5-value phase representation by grouping
+        # the seven detailed phases into five mission categories.
+        phase_group = {
+            0: 0,  # takeoff
+            1: 1,  # start hover
+            2: 1,  # start formation transition
+            3: 2,  # travel
+            4: 3,  # goal formation transition
+            5: 3,  # goal hover
+            6: 4,  # landing
+        }[self.phase]
+
         phase_onehot = np.zeros(5, dtype=np.float32)
-        phase_onehot[self.phase] = 1.0
+        phase_onehot[phase_group] = 1.0
 
         obs_parts = []
 
@@ -778,6 +784,12 @@ class MultiUAVVelocityFormationEnv(gym.Env):
             "mission_success": False,
             "phase": int(self.phase),
             "phase_name": self.phase_names[self.phase],
+            "current_formation": self.formation_manager.current_formation,
+            "target_formation": self.formation_manager.target_formation,
+            "formation_transitioning": bool(self.formation_manager.transitioning),
+            "formation_transition_progress": float(
+                self.formation_manager.get_transition_progress()
+            ),
             "center_error": center_dist,
             "mean_dist_to_target": mean_assigned_target_dist,
             "max_dist_to_target": max_assigned_target_dist,
@@ -823,75 +835,21 @@ class MultiUAVVelocityFormationEnv(gym.Env):
         positions = sim_obs[:, 0:3]
         velocities = sim_obs[:, 10:13]
 
-        centroid = np.mean(positions, axis=0)
-        mean_speed = float(np.mean(np.linalg.norm(velocities, axis=1)))
-
-        phase = self.phase
-        completed = False
-
-        center_error = float(info.get("center_error", 999.0))
-        formation_error = float(info.get("formation_error", 999.0))
-        spacing_error = float(info.get("spacing_error", 999.0))
-        collision_count = int(info.get("collision_count", 99))
-        crashed = bool(info.get("crashed", False))
-
-        stable_formation = (
-            formation_error < 0.38
-            and spacing_error < 0.30
-            and collision_count == 0
-            and not crashed
+        completed = self.scenario_manager.is_phase_complete(
+            phase_index=self.phase,
+            positions=positions,
+            velocities=velocities,
+            info=info,
+            current_formation=self.formation_manager.current_formation,
+            formation_transitioning=self.formation_manager.transitioning,
         )
-
-        if phase == 0:
-            completed = bool(
-                np.mean(positions[:, 2]) > 0.90
-                and abs(np.mean(positions[:, 2]) - self.target_altitude) < 0.18
-                and stable_formation
-            )
-
-        elif phase == 1:
-            completed = bool(
-                stable_formation
-                and mean_speed < 0.45
-            )
-
-        elif phase == 2:
-            completed = bool(
-                centroid[0] >= self.goal_x - 0.35
-                and stable_formation
-            )
-
-        elif phase == 3:
-            completed = bool(
-                center_error < 0.45
-                and stable_formation
-                and mean_speed < 0.45
-            )
-
-        elif phase == 4:
-            mean_altitude = float(np.mean(positions[:, 2]))
-            max_altitude = float(np.max(positions[:, 2]))
-
-            completed = bool(
-                mean_altitude < 0.16
-                and max_altitude < 0.22
-                and mean_speed < 0.35
-                and collision_count == 0
-                and not crashed
-            )
 
         if completed:
             self.phase_hold_counter += 1
         else:
             self.phase_hold_counter = 0
 
-        hold_needed = {
-            0: 18,
-            1: 35,
-            2: 12,
-            3: 35,
-            4: 8,
-        }[phase]
+        hold_needed = self.scenario_manager.get_hold_steps(self.phase)
 
         if self.phase_hold_counter >= hold_needed:
             self.phase_hold_counter = 0
@@ -902,6 +860,11 @@ class MultiUAVVelocityFormationEnv(gym.Env):
                 return
 
             self.phase += 1
+
+            requested_formation = self.scenario_manager.get_requested_formation(
+                self.phase
+            )
+            self.formation_manager.request_formation(requested_formation)
 
     def _to_numpy_obs(self, sim_obs):
         if isinstance(sim_obs, tuple):
@@ -934,3 +897,6 @@ class MultiUAVVelocityFormationEnv(gym.Env):
 
     def close(self):
         self.env.close()
+
+# Backward-compatible alias for scripts that still import the old class name.
+MultiUAVVelocityFormationEnv = AdaptiveFormationEnv
