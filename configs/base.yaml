@@ -4,15 +4,34 @@ project:
 
 environment:
   num_uavs: 3
-  scenario: formation_switching
+  render_mode: headless
   max_steps: 1500
-  gui: false
+  ctrl_freq: 48
+  sim_freq: 240
+  mission_stage: 3
+
+mission:
+  target_altitude: 1.0
+  start_x: 0.0
+  goal_x: 7.0
 
 formation:
+  initial: triangle
   preferred: triangle
   alternative: line
-  spacing: 0.6
-  transition_steps: 100
+  triangle_side: 1.20
+  spacing: 0.75
+  transition_steps: 160
+
+control:
+  reference_max_vx: 0.25
+  reference_max_vy: 0.18
+  reference_max_vz: 0.14
+  correction_scale: 0.06
+  velocity_lookahead: 0.30
+  kp_center: 0.32
+  kp_form: 0.60
+  kp_alt: 0.45
 
 training:
   episodes: 3000
@@ -23,6 +42,10 @@ training:
 evaluation:
   episodes: 10
   deterministic: true
+
+communication:
+  use_neighbor_dropout: true
+  neighbor_dropout_prob: 0.02
 
 obstacle_avoidance:
   use_apf: false

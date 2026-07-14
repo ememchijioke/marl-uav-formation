@@ -7,7 +7,6 @@ from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
 from envs.formation_manager import FormationManager
-from envs.scenario_manager import ScenarioManager
 
 
 class AdaptiveFormationEnv(gym.Env):
@@ -62,8 +61,8 @@ class AdaptiveFormationEnv(gym.Env):
         start_x=0.0,
         goal_x=7.0,
         triangle_side=1.20,
-        formation_spacing=None,
-        transition_steps=100,
+        formation_spacing=0.60,
+        transition_steps=160,
         reference_max_vx=0.30,
         reference_max_vy=0.22,
         reference_max_vz=0.14,
@@ -112,13 +111,6 @@ class AdaptiveFormationEnv(gym.Env):
         self.goal_x = float(goal_x)
 
         self.triangle_side = float(triangle_side)
-
-        # Backward compatibility: when formation_spacing is omitted, preserve
-        # the old triangle geometry by deriving the centroid-to-vertex radius
-        # from the requested equilateral triangle side length.
-        if formation_spacing is None:
-            formation_spacing = self.triangle_side / np.sqrt(3.0)
-
         self.formation_spacing = float(formation_spacing)
         self.transition_steps = int(transition_steps)
 
@@ -170,22 +162,39 @@ class AdaptiveFormationEnv(gym.Env):
         self.spacing_error_scale = 1.5
         self.altitude_scale = 1.0
 
-        self.scenario_manager = ScenarioManager(
-            start_x=self.start_x,
-            goal_x=self.goal_x,
-            target_altitude=self.target_altitude,
-            landing_altitude=self.landing_altitude,
-            mission_stage=self.mission_stage,
+        self.phase_names = [
+            "takeoff_triangle",
+            "start_hover_triangle",
+            "triangle_approach",
+            "transition_to_line",
+            "line_corridor",
+            "transition_to_triangle",
+            "triangle_to_goal",
+            "goal_hover_triangle",
+            "landing_triangle",
+        ]
+
+        self.max_phase_for_stage = {
+            1: 3,
+            2: 7,
+            3: 8,
+        }[self.mission_stage]
+
+        self.start_center = np.array(
+            [self.start_x, 0.0, self.target_altitude],
+            dtype=np.float32,
         )
 
-        # Compatibility aliases used by the existing reward and control code.
-        self.phase_names = self.scenario_manager.phase_names
-        self.max_phase_for_stage = self.scenario_manager.max_phase
-        self.start_center = self.scenario_manager.start_center.copy()
-        self.goal_center = self.scenario_manager.goal_center.copy()
-        self.landing_center = self.scenario_manager.landing_center.copy()
+        self.goal_center = np.array(
+            [self.goal_x, 0.0, self.target_altitude],
+            dtype=np.float32,
+        )
 
-        # `formations.py` uses centroid-radius style spacing for the triangle.
+        self.landing_center = np.array(
+            [self.goal_x, 0.0, self.landing_altitude],
+            dtype=np.float32,
+        )
+
         self.formation_manager = FormationManager(
             initial_formation="triangle",
             spacing=self.formation_spacing,
@@ -322,10 +331,10 @@ class AdaptiveFormationEnv(gym.Env):
 
         phase_correction_scale = self.correction_scale
 
-        if self.phase == 5:
+        if self.phase == 7:
             phase_correction_scale = min(self.correction_scale, 0.04)
 
-        elif self.phase == 6:
+        elif self.phase == 8:
             phase_correction_scale = min(self.correction_scale, 0.03)
 
         correction_velocity = phase_correction_scale * learned_action
@@ -367,7 +376,7 @@ class AdaptiveFormationEnv(gym.Env):
             target_pos[0] = np.clip(target_pos[0], -1.0, self.goal_x + 1.2)
             target_pos[1] = np.clip(target_pos[1], -2.5, 2.5)
 
-            if self.phase == 6:
+            if self.phase == 8:
                 target_pos[2] = np.clip(target_pos[2], 0.04, 1.20)
             else:
                 target_pos[2] = np.clip(target_pos[2], 0.05, 1.35)
@@ -451,9 +460,36 @@ class AdaptiveFormationEnv(gym.Env):
         return np.asarray(rows, dtype=np.float32)
 
     def _phase_target_and_offsets(self):
-        target_center = self.scenario_manager.get_target_center(self.phase)
         offsets = self.formation_manager.current_offsets.copy()
-        return target_center, offsets
+
+        switch_to_line_x = float(
+            getattr(getattr(self, "scenario", None), "switch_to_line_x", 2.35)
+        )
+        restore_triangle_x = float(
+            getattr(getattr(self, "scenario", None), "restore_triangle_x", 4.65)
+        )
+
+        if self.phase in (0, 1):
+            return self.start_center.copy(), offsets
+
+        if self.phase in (2, 3):
+            target = np.array(
+                [switch_to_line_x, 0.0, self.target_altitude],
+                dtype=np.float32,
+            )
+            return target, offsets
+
+        if self.phase in (4, 5):
+            target = np.array(
+                [restore_triangle_x, 0.0, self.target_altitude],
+                dtype=np.float32,
+            )
+            return target, offsets
+
+        if self.phase in (6, 7):
+            return self.goal_center.copy(), offsets
+
+        return self.landing_center.copy(), offsets
 
     def _desired_pair_distances(self, formation_offsets):
         distances = {}
@@ -475,6 +511,13 @@ class AdaptiveFormationEnv(gym.Env):
         center_velocity_cmd = self.kp_center * center_error
         center_velocity_cmd[2] = self.kp_alt * center_error[2]
 
+        # During formation transitions, slow only the swarm centroid motion.
+        # Do not suppress the per-UAV x-axis formation correction; the line
+        # requires agents to separate longitudinally while converging laterally.
+        if self.phase in (3, 5):
+            center_velocity_cmd[0] *= 0.05
+            center_velocity_cmd[1] *= 0.20
+
         desired_positions = target_center[None, :] + formation_offsets
         formation_tracking_error = desired_positions - positions
 
@@ -484,13 +527,13 @@ class AdaptiveFormationEnv(gym.Env):
             form_cmd = self.kp_form * formation_tracking_error[i]
             reference_velocity[i] = center_velocity_cmd + form_cmd
 
-        if self.phase in (1, 2):
+        if self.phase == 1:
             reference_velocity[:, 0] *= 0.30
 
-        elif self.phase in (4, 5):
+        elif self.phase == 7:
             reference_velocity[:, 0] *= 0.20
 
-        if self.phase == 6:
+        if self.phase == 8:
             reference_velocity[:, 0] *= 0.15
             reference_velocity[:, 1] *= 0.45
             reference_velocity[:, 2] = np.minimum(reference_velocity[:, 2], -0.05)
@@ -515,16 +558,18 @@ class AdaptiveFormationEnv(gym.Env):
             dtype=np.float32,
         )
 
-        # Preserve the original 5-value phase representation by grouping
-        # the seven detailed phases into five mission categories.
+        # Preserve the original 5-value phase representation while the
+        # detailed Easy City mission uses nine internal phases.
         phase_group = {
             0: 0,  # takeoff
             1: 1,  # start hover
-            2: 1,  # start formation transition
-            3: 2,  # travel
-            4: 3,  # goal formation transition
-            5: 3,  # goal hover
-            6: 4,  # landing
+            2: 2,  # triangle approach
+            3: 2,  # transition to line
+            4: 2,  # line corridor
+            5: 2,  # transition to triangle
+            6: 2,  # triangle to goal
+            7: 3,  # goal hover
+            8: 4,  # landing
         }[self.phase]
 
         phase_onehot = np.zeros(5, dtype=np.float32)
@@ -844,21 +889,117 @@ class AdaptiveFormationEnv(gym.Env):
         positions = sim_obs[:, 0:3]
         velocities = sim_obs[:, 10:13]
 
-        completed = self.scenario_manager.is_phase_complete(
-            phase_index=self.phase,
-            positions=positions,
-            velocities=velocities,
-            info=info,
-            current_formation=self.formation_manager.current_formation,
-            formation_transitioning=self.formation_manager.transitioning,
+        centroid = np.mean(positions, axis=0)
+        mean_speed = float(np.mean(np.linalg.norm(velocities, axis=1)))
+
+        phase = self.phase
+        completed = False
+
+        center_error = float(info.get("center_error", 999.0))
+        formation_error = float(info.get("formation_error", 999.0))
+        spacing_error = float(info.get("spacing_error", 999.0))
+        collision_count = int(info.get("collision_count", 99))
+        crashed = bool(info.get("crashed", False))
+
+        stable_formation = (
+            formation_error < 0.38
+            and spacing_error < 0.30
+            and collision_count == 0
+            and not crashed
         )
+
+        switch_to_line_x = float(
+            getattr(getattr(self, "scenario", None), "switch_to_line_x", 2.35)
+        )
+        restore_triangle_x = float(
+            getattr(getattr(self, "scenario", None), "restore_triangle_x", 4.65)
+        )
+
+        if phase == 0:
+            completed = bool(
+                np.mean(positions[:, 2]) > 0.90
+                and abs(np.mean(positions[:, 2]) - self.target_altitude) < 0.18
+                and stable_formation
+            )
+
+        elif phase == 1:
+            completed = bool(stable_formation and mean_speed < 0.45)
+
+        elif phase == 2:
+            completed = bool(
+                centroid[0] >= switch_to_line_x - 0.15
+                and stable_formation
+            )
+
+        elif phase == 3:
+            completed = bool(
+                not self.formation_manager.transitioning
+                and self.formation_manager.current_formation == "line"
+                and spacing_error < 0.15
+                and float(info.get("min_pair_dist", 0.0)) > self.min_separation + 0.10
+                and mean_speed < 0.25
+                and collision_count == 0
+                and not crashed
+            )
+
+        elif phase == 4:
+            completed = bool(
+                centroid[0] >= restore_triangle_x - 0.15
+                and stable_formation
+            )
+
+        elif phase == 5:
+            completed = bool(
+                not self.formation_manager.transitioning
+                and self.formation_manager.current_formation == "triangle"
+                and spacing_error < 0.15
+                and float(info.get("min_pair_dist", 0.0)) > self.min_separation + 0.10
+                and mean_speed < 0.25
+                and collision_count == 0
+                and not crashed
+            )
+
+        elif phase == 6:
+            completed = bool(
+                centroid[0] >= self.goal_x - 0.35
+                and stable_formation
+            )
+
+        elif phase == 7:
+            completed = bool(
+                center_error < 0.45
+                and stable_formation
+                and mean_speed < 0.45
+            )
+
+        elif phase == 8:
+            mean_altitude = float(np.mean(positions[:, 2]))
+            max_altitude = float(np.max(positions[:, 2]))
+
+            completed = bool(
+                mean_altitude < 0.16
+                and max_altitude < 0.22
+                and mean_speed < 0.35
+                and collision_count == 0
+                and not crashed
+            )
 
         if completed:
             self.phase_hold_counter += 1
         else:
             self.phase_hold_counter = 0
 
-        hold_needed = self.scenario_manager.get_hold_steps(self.phase)
+        hold_needed = {
+            0: 18,
+            1: 35,
+            2: 12,
+            3: 40,
+            4: 12,
+            5: 40,
+            6: 12,
+            7: 35,
+            8: 8,
+        }[phase]
 
         if self.phase_hold_counter >= hold_needed:
             self.phase_hold_counter = 0
@@ -870,10 +1011,11 @@ class AdaptiveFormationEnv(gym.Env):
 
             self.phase += 1
 
-            requested_formation = self.scenario_manager.get_requested_formation(
-                self.phase
-            )
-            self.formation_manager.request_formation(requested_formation)
+            if self.phase == 3:
+                self.formation_manager.request_formation("line")
+
+            elif self.phase == 5:
+                self.formation_manager.request_formation("triangle")
 
     def _to_numpy_obs(self, sim_obs):
         if isinstance(sim_obs, tuple):
