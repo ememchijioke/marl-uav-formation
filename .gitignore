@@ -2,9 +2,8 @@
 # Python
 # =========================
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 
 # =========================
 # Virtual environments
@@ -14,18 +13,20 @@ venv/
 env/
 
 # =========================
-# WandB
+# Experiment tracking
 # =========================
 wandb/
+tensorboard_logs/
+runs/
 
 # =========================
 # Training artifacts
 # =========================
 checkpoints/
-checkpoints_single_uav/
-checkpoints_realistic/
 checkpoints*/
 eval_frames*/
+results/raw/
+results/temp/
 
 # =========================
 # Model weights
@@ -44,14 +45,22 @@ eval_frames*/
 *.gif
 
 # =========================
-# Logs / data
+# Temporary logs
 # =========================
-*.csv
 *.log
 
 # =========================
-# OS / Editor
+# Generated structure files
+# =========================
+project_structure.txt
+structure.txt
+clean_structure.txt
+project_summary.sh
+
+# =========================
+# OS / Editors
 # =========================
 .DS_Store
+Thumbs.db
 .vscode/
 .idea/

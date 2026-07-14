@@ -39,8 +39,7 @@ from typing import Dict, Tuple
 # CONFIG
 # ============================================================
 
-WORLD_NAME = "three_uav_kinematic_demo_world"
-
+WORLD_NAME = "photo_style_gantry_stable"
 SET_POSE_VECTOR_SERVICE = f"/world/{WORLD_NAME}/set_pose_vector"
 SET_PHYSICS_SERVICE = f"/world/{WORLD_NAME}/set_physics"
 

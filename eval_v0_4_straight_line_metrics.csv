@@ -1,0 +1,1 @@
+timestamp,episode,reward,success,landed,phase_label,centroid_error,formation_error,max_agent_formation_error,mean_dist_to_target,max_dist_to_target,mean_speed,max_speed,mean_attitude_error,min_pair_dist,collision_count,crashed,centroid_x,centroid_y,centroid_z
