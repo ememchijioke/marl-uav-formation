@@ -5,7 +5,7 @@ project:
 environment:
   num_uavs: 3
   render_mode: headless
-  max_steps: 1500
+  max_steps: 1800
   ctrl_freq: 48
   sim_freq: 240
   mission_stage: 3
@@ -20,7 +20,7 @@ formation:
   preferred: triangle
   alternative: line
   triangle_side: 1.20
-  spacing: 0.75
+  spacing: 0.70
   transition_steps: 160
 
 control:

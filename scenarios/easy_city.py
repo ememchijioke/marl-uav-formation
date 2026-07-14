@@ -47,14 +47,14 @@ class EasyCityScenario(UrbanScenario):
             Obstacle(
                 name="easy_building_left",
                 kind="building",
-                center=np.array([3.5, -1.25, 1.0], dtype=np.float32),
+                center=np.array([3.5, -1.45, 1.0], dtype=np.float32),
                 size=np.array([1.2, 1.5, 2.0], dtype=np.float32),
                 safety_margin=0.12,
             ),
             Obstacle(
                 name="easy_building_right",
                 kind="building",
-                center=np.array([3.5, 1.25, 1.0], dtype=np.float32),
+                center=np.array([3.5, 1.45, 1.0], dtype=np.float32),
                 size=np.array([1.2, 1.5, 2.0], dtype=np.float32),
                 safety_margin=0.12,
             ),
