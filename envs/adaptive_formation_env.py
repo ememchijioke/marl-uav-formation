@@ -62,7 +62,8 @@ class AdaptiveFormationEnv(gym.Env):
         start_x=0.0,
         goal_x=7.0,
         triangle_side=1.20,
-        formation_transition_steps=120,
+        formation_spacing=None,
+        transition_steps=100,
         reference_max_vx=0.30,
         reference_max_vy=0.22,
         reference_max_vz=0.14,
@@ -111,10 +112,21 @@ class AdaptiveFormationEnv(gym.Env):
         self.goal_x = float(goal_x)
 
         self.triangle_side = float(triangle_side)
-        self.formation_transition_steps = int(formation_transition_steps)
 
-        if self.formation_transition_steps <= 0:
-            raise ValueError("formation_transition_steps must be greater than zero.")
+        # Backward compatibility: when formation_spacing is omitted, preserve
+        # the old triangle geometry by deriving the centroid-to-vertex radius
+        # from the requested equilateral triangle side length.
+        if formation_spacing is None:
+            formation_spacing = self.triangle_side / np.sqrt(3.0)
+
+        self.formation_spacing = float(formation_spacing)
+        self.transition_steps = int(transition_steps)
+
+        if self.formation_spacing <= 0.0:
+            raise ValueError("formation_spacing must be greater than zero.")
+
+        if self.transition_steps <= 0:
+            raise ValueError("transition_steps must be greater than zero.")
 
         self.reference_max_vel = np.array(
             [reference_max_vx, reference_max_vy, reference_max_vz],
@@ -174,13 +186,10 @@ class AdaptiveFormationEnv(gym.Env):
         self.landing_center = self.scenario_manager.landing_center.copy()
 
         # `formations.py` uses centroid-radius style spacing for the triangle.
-        # triangle_side / sqrt(3) preserves the original triangle side length.
-        formation_spacing = self.triangle_side / np.sqrt(3.0)
-
         self.formation_manager = FormationManager(
             initial_formation="triangle",
-            spacing=formation_spacing,
-            transition_steps=self.formation_transition_steps,
+            spacing=self.formation_spacing,
+            transition_steps=self.transition_steps,
         )
 
         initial_offsets = self.formation_manager.current_offsets.copy()
